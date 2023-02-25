@@ -2,7 +2,7 @@
 
 ## Installation
 
-1. Download game-warhammer40kdarktide.zip
+1. Download [game-warhammer40kdarktide.zip](https://github.com/danreeves/vortex-extension-darktide/releases/latest)
 2. In Vortex go to the Extensions tab
 3. Either drag the zip into the "Drop file(s)" area or click it to browse for the zip
 4. Searching the extensions page for "darktide" should now show "Game: Warhamme 40,000: Darktide" installed and enabled
