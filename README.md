@@ -27,5 +27,6 @@ The modding tools come with a patcher which modifies the game to load mods. From
 
 ## FAQs
 
-1. Why aren't mods loading?
-   Ensure you have patched the game, and you have mods both "deployed" and enabled in the load order.
+#### Why aren't mods loading?
+
+Ensure you have patched the game, and you have mods both "deployed" and enabled in the load order.
