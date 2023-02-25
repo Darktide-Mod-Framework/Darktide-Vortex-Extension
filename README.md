@@ -19,7 +19,7 @@ In the Mods tab you can manage which mods are installed. Drop mods here and pres
 
 ### Load Order
 
-In the Load order tab you can control _which are enabled in game_ and in _which order they are loaded_. Load order is only important when mods depend on each other.
+In the Load order tab you can control **which are enabled in game** and in **which order they are loaded**. Load order is only important when mods depend on each other or they override each others behaviour. Last mod loaded wins.
 
 ### Tools
 
