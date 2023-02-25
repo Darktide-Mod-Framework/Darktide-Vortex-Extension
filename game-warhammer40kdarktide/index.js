@@ -55,6 +55,7 @@ async function deserializeLoadOrder(context) {
     {}
   );
   let gameDir = await queryPath();
+
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
   let loadOrderFile = await fs.readFileAsync(loadOrderPath, {
     encoding: "utf8",
@@ -93,7 +94,7 @@ async function deserializeLoadOrder(context) {
       id: modId,
       // This lets us show "Not managed by Vortex" in the load order screen
       modId: Object.values(vortexManagedMods).some(
-        (mod) => mod.attributes.logicalFileName === modId
+        (mod) => mod.id.replace(/(-[\d-]+$)/, "") === modId
       )
         ? modId
         : undefined,
