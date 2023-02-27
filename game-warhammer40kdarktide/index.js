@@ -48,12 +48,6 @@ async function requiresLauncher() {
 }
 
 async function deserializeLoadOrder(context) {
-  const state = context.api.store.getState();
-  const vortexManagedMods = util.getSafe(
-    state,
-    ["persistent", "mods", GAME_ID],
-    {}
-  );
   let gameDir = await queryPath();
 
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
@@ -80,6 +74,21 @@ async function deserializeLoadOrder(context) {
     }
   });
 
+  // This is the most reliable way I could find to detect if a mod
+  // is managed by Vortex
+  let vortexManaged = modFolders.reduce((mods, modId) => {
+    try {
+      fs.readFileSync(
+        path.join(modFolderPath, modId, `__folder_managed_by_vortex`)
+      );
+      mods[modId] = true;
+      return mods;
+    } catch (e) {
+      mods[modId] = false;
+      return mods;
+    }
+  }, {});
+
   // Remove any mods from the mod_load_order that don't have corresponding
   // mods in the file system
   loadOrder = loadOrder.filter((modId) => modFolders.includes(modId));
@@ -92,12 +101,8 @@ async function deserializeLoadOrder(context) {
   return allMods.map((modId) => {
     return {
       id: modId,
-      // This lets us show "Not managed by Vortex" in the load order screen
-      modId: Object.values(vortexManagedMods).some(
-        (mod) => mod.id.replace(/(-[\d-]+$)/, "") === modId
-      )
-        ? modId
-        : undefined,
+      // Add mod id to remove "Not managed by Vortex" message
+      modId: vortexManaged[modId] ? modId : undefined,
       enabled: loadOrder.includes(modId),
     };
   });
