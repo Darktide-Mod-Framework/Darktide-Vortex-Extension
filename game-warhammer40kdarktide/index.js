@@ -195,7 +195,7 @@ async function install_mod_load_order_file_maker(files) {
     return {
       type: "copy",
       source: file,
-      destination: path.join(file.substr(idx)),
+      destination: path.join("mods", file.substr(idx)),
     };
   });
   return { instructions };
