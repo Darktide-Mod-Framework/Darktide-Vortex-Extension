@@ -288,7 +288,6 @@ async function serializeLoadOrder(_context, loadOrder) {
     { encoding: "utf8" }
   );
 }
-//end source code github
 
 function main(context) {
   context.registerInstaller('tetstidk-mod', 25, testSupportedContent, installContentverifier);
