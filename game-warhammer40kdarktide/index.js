@@ -294,7 +294,8 @@ function main(context) {
   context.registerInstaller('tetstidk-mod', 25, testSupportedContent, installContentverifier);
   context.registerGame({
     id: GAME_ID,
-    name: 'WarHammer 40,000: Darktide',
+    name: 'Warhammer 40,000: Darktide',
+
     mergeMods: true,
     queryPath: findGame,
     directoryCleaning: "tag",
