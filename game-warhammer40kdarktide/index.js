@@ -1,5 +1,10 @@
+// Nexus Mods domain for the game. e.g. nexusmods.com/warhammer40kdarktide
 const GAME_ID = 'warhammer40kdarktide';
+
+// Steam app id
 const STEAMAPP_ID = '1361210';
+
+// Microsoft Store app id (gamepass)
 const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
 
