@@ -307,7 +307,7 @@ function main(context) {
     requiresCleanup: false,
     requiresLauncher,
     queryModPath: () => '',
-    logo: 'gameart.jpg',
+    logo: 'gameart.png',
     executable: () => "binaries/Darktide.exe",
     parameters: [
       "--bundle-dir",
