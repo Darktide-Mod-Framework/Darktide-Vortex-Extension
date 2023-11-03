@@ -155,8 +155,6 @@ async function installMod(files) {
   return { instructions };
 }
 
-// TODO: overwriting the game folder just because it has a .bat isn't good
-// This should be improved
 async function installDML(files) {
   const gamePath = await queryPath();
   const mod_load_order_file_maker = files.find(
@@ -179,7 +177,6 @@ async function installDML(files) {
   return { instructions };
 }
 
-// TODO: this is the same as above...
 async function install_mod_load_order_file_maker(files) {
   const mod_load_order_file_maker = files.find(
     (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT
