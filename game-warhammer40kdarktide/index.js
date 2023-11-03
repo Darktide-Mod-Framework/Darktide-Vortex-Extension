@@ -1,25 +1,17 @@
-// Nexus Mods domain for the game. e.g. nexusmods.com/warhammer40kdarktide
-const GAME_ID = "warhammer40kdarktide";
-
-// Steam app id
-const STEAMAPP_ID = "1361210";
-
-// Microsoft Store app id (gamepass)
-const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
-
 const path = require("path");
 const { fs, log, util } = require("vortex-api");
 
-function findGame() {
-  return util.GameStoreHelper.findByAppId([STEAMAPP_ID, MS_APPID]).then(
-    (game) => game.gamePath
-  );
-}
+// Nexus Mods domain for the game. e.g. nexusmods.com/warhammer40kdarktide
+const GAME_ID = "warhammer40kdarktide";
+// Steam app id
+const STEAMAPP_ID = "1361210";
+// Microsoft Store app id (gamepass)
+const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
 const tools = [
   {
     id: "ToggleMods",
-    name: "Darktide Mod Loader/Patcher",
+    name: "Darktide Mod Patcher",
     shortName: "DML",
     logo: "DML.jpg",
     executable: () => "tools/dtkit-patch.exe",
@@ -44,20 +36,24 @@ const tools = [
     exclusive: true,
   },
 ];
-function prepareForModding(discovery, api) {
-  const toggle_mods_path = path.join(
-    discovery.path,
-    "toggle_darktide_mods.bat"
+
+async function prepareForModding(discovery, api) {
+  // Ensure the mods directory exists
+  await fs.ensureDirWritableAsync(path.join(discovery.path, "mods"));
+
+  // Ensure the mod load order file exists
+  await fs.ensureFileAsync(
+    path.join(discovery.path, "mods", "mod_load_order.txt")
   );
-  const mod_framework = path.join(discovery.path, "/mods/dmf");
-  return fs
-    .ensureDirWritableAsync(path.join(discovery.path, "mods"))
-    .then(
-      () => (checkForTMP(api, toggle_mods_path), checkForMF(api, mod_framework))
-    );
+
+  // Check if DMF is installed
+  await checkForDMF(api, path.join(discovery.path, "mods", "dmf"));
+
+  // Check if DML is installed
+  await checkForDML(api, path.join(discovery.path, "toggle_darktide_mods.bat"));
 }
 
-function checkForMF(api, mod_framework) {
+function checkForDMF(api, mod_framework) {
   return fs.statAsync(mod_framework).catch(() => {
     api.sendNotification({
       id: "darktide-mod-framework-missing",
@@ -76,7 +72,7 @@ function checkForMF(api, mod_framework) {
     });
   });
 }
-function checkForTMP(api, toggle_mods_path) {
+function checkForDML(api, toggle_mods_path) {
   return fs.statAsync(toggle_mods_path).catch(() => {
     api.sendNotification({
       id: "toggle_darktide_mods-missing",
@@ -97,7 +93,7 @@ function checkForTMP(api, toggle_mods_path) {
 }
 
 const MOD_FILE_EXT = ".mod";
-const Bat_FILE_EXT = ".bat";
+const BAT_FILE_EXT = ".bat";
 
 function testSupportedContent(files, gameId) {
   let supported =
@@ -105,7 +101,7 @@ function testSupportedContent(files, gameId) {
     files.find(
       (file) =>
         path.extname(file).toLowerCase() === MOD_FILE_EXT ||
-        path.extname(file).toLowerCase() === Bat_FILE_EXT
+        path.extname(file).toLowerCase() === BAT_FILE_EXT
     ) !== undefined;
 
   return Promise.resolve({
@@ -114,22 +110,22 @@ function testSupportedContent(files, gameId) {
   });
 }
 
-function installContentverifier(files) {
+async function installContent(files) {
   const modFile = files.find(
     (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT
   );
   if (modFile) {
-    return installContentmain(files);
+    return installMod(files);
   }
   const DML = files.find(
     (file) => file.toLowerCase() === "toggle_darktide_mods.bat"
   );
   if (DML) {
-    return install_DML(files);
+    return installDML(files);
   }
   const mod_load_order_file_maker = files.find(
     (file) =>
-      path.extname(file).toLowerCase() === Bat_FILE_EXT &&
+      path.extname(file).toLowerCase() === BAT_FILE_EXT &&
       file.includes("_mod_load_order_file_maker")
   );
   if (mod_load_order_file_maker) {
@@ -139,7 +135,7 @@ function installContentverifier(files) {
   return;
 }
 
-function installContentmain(files) {
+async function installMod(files) {
   const modFile = files.find(
     (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT
   );
@@ -156,12 +152,37 @@ function installContentmain(files) {
       destination: path.join("mods", modName, file.substr(idx)),
     };
   });
-  return Promise.resolve({ instructions });
+  return { instructions };
 }
 
-function install_DML(files) {
+// TODO: overwriting the game folder just because it has a .bat isn't good
+// This should be improved
+async function installDML(files) {
+  const gamePath = await queryPath();
   const mod_load_order_file_maker = files.find(
-    (file) => path.extname(file).toLowerCase() === Bat_FILE_EXT
+    (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT
+  );
+  const idx = mod_load_order_file_maker.indexOf(
+    path.basename(mod_load_order_file_maker)
+  );
+  const rootPath = path.dirname(mod_load_order_file_maker);
+  const filtered = files.filter(
+    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
+  );
+  const instructions = filtered.map((file) => {
+    return {
+      type: "copy",
+      source: file,
+      destination: file.substr(idx),
+    };
+  });
+  return { instructions };
+}
+
+// TODO: this is the same as above...
+async function install_mod_load_order_file_maker(files) {
+  const mod_load_order_file_maker = files.find(
+    (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT
   );
   const idx = mod_load_order_file_maker.indexOf(
     path.basename(mod_load_order_file_maker)
@@ -177,28 +198,17 @@ function install_DML(files) {
       destination: path.join(file.substr(idx)),
     };
   });
-  return Promise.resolve({ instructions });
+  return { instructions };
 }
 
-function install_mod_load_order_file_maker(files) {
-  const mod_load_order_file_maker = files.find(
-    (file) => path.extname(file).toLowerCase() === Bat_FILE_EXT
-  );
-  const idx = mod_load_order_file_maker.indexOf(
-    path.basename(mod_load_order_file_maker)
-  );
-  const rootPath = path.dirname(mod_load_order_file_maker);
-  const filtered = files.filter(
-    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
-  );
-  const instructions = filtered.map((file) => {
-    return {
-      type: "copy",
-      source: file,
-      destination: path.join("mods", file.substr(idx)),
-    };
-  });
-  return Promise.resolve({ instructions });
+async function queryGame() {
+  let game = await util.GameStoreHelper.findByAppId([STEAMAPP_ID, MS_APPID]);
+  return game;
+}
+
+async function queryPath() {
+  let game = await queryGame();
+  return game.gamePath;
 }
 
 async function requiresLauncher() {
@@ -218,17 +228,6 @@ async function requiresLauncher() {
       },
     };
   }
-}
-
-async function queryGame() {
-  let game = await util.GameStoreHelper.findByAppId([STEAMAPP_ID, MS_APPID]);
-  return game;
-}
-
-async function queryPath() {
-  // Find the game folder
-  let game = await queryGame();
-  return game.gamePath;
 }
 
 async function deserializeLoadOrder(context) {
@@ -321,21 +320,20 @@ function main(context) {
     "warhammer40kdarktide-mod",
     25,
     testSupportedContent,
-    installContentverifier
+    installContent
   );
 
   context.registerGame({
     id: GAME_ID,
     name: "Warhammer 40,000: Darktide",
-
-    mergeMods: true,
-    queryPath: findGame,
-    directoryCleaning: "tag",
+    logo: "gameart.png",
+    queryPath,
+    queryModPath: () => "",
     supportedTools: tools,
+    mergeMods: true,
+    directoryCleaning: "tag",
     requiresCleanup: false,
     requiresLauncher,
-    queryModPath: () => "mods",
-    logo: "gameart.png",
     executable: () => "binaries/Darktide.exe",
     parameters: [
       "--bundle-dir",
@@ -352,7 +350,7 @@ function main(context) {
       "binaries/Darktide.exe",
       "start_protected_game.exe",
     ],
-    setup: (discovery) => prepareForModding(discovery, context.api),
+    setup: async (discovery) => await prepareForModding(discovery, context.api),
     environment: {
       SteamAPPId: STEAMAPP_ID,
     },
@@ -360,6 +358,7 @@ function main(context) {
       steamAppId: STEAMAPP_ID,
     },
   });
+
   context.registerLoadOrder({
     gameId: GAME_ID,
     validate: async () => Promise.resolve(undefined), // no validation implemented yet
