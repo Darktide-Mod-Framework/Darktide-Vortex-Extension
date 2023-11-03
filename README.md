@@ -2,6 +2,9 @@
 
 ## Installation
 
+**Download the extension directly from Nexus Mods: https://www.nexusmods.com/site/mods/684**
+
+### Manually
 1. Download [game-warhammer40kdarktide.zip](https://github.com/danreeves/vortex-extension-darktide/releases/latest)
 2. In Vortex go to the Extensions tab
 3. Either drag the zip into the "Drop file(s)" area or click it to browse for the zip
@@ -30,3 +33,7 @@ The modding tools come with a patcher which modifies the game to load mods. From
 #### Why aren't mods loading?
 
 Ensure you have patched the game, and you have mods both "deployed" and enabled in the load order.
+
+## Contributors
+ - [danreeves](https://github.com/danreeves)
+ - [Infarcactus](https://github.com/Infarcactus)
