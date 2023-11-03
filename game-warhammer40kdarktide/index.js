@@ -335,7 +335,6 @@ function main(context) {
       await serializeLoadOrder(context, loadOrder),
     toggleableEntries: true,
   });
-  //end source code github
 	
 	return true
 }
