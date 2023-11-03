@@ -13,7 +13,7 @@ const tools = [
     id: "ToggleMods",
     name: "Darktide Mod Patcher",
     shortName: "DML",
-    logo: "DML.jpg",
+    logo: "dmf.png",
     executable: () => "tools/dtkit-patch.exe",
     requiredFiles: ["tools/dtkit-patch.exe"],
     relative: true,
