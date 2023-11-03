@@ -1,32 +1,178 @@
-// Import some assets from Vortex we'll need.
-const path = require("path");
-const { fs, util } = require("vortex-api");
-
-// Nexus Mods domain for the game. e.g. nexusmods.com/warhammer40kdarktide
-const GAME_ID = "warhammer40kdarktide";
-// Steam app id
-const STEAM_APPID = "1361210";
-// Microsoft Store app id (gamepass)
+const GAME_ID = 'warhammer40kdarktide';
+const STEAMAPP_ID = '1361210';
 const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
-async function queryGame() {
-  let game = await util.GameStoreHelper.findByAppId([STEAM_APPID, MS_APPID]);
-  return game;
+
+const path = require('path');
+const { fs, log, util } = require('vortex-api');
+
+
+function findGame() {
+  return util.GameStoreHelper.findByAppId([STEAMAPP_ID, MS_APPID])
+      .then(game => game.gamePath);
 }
 
-async function queryPath() {
-  // Find the game folder
-  let game = await queryGame();
-  return game.gamePath;
+const tools = [
+  {
+    id: 'ToggleMods',
+    name: 'Darktide Mod Loader/Patcher',
+    shortName: 'DML',
+    logo: 'DML.jpg',
+    executable: () => "tools/dtkit-patch.exe",
+    requiredFiles: ["tools/dtkit-patch.exe"],
+    relative: true,
+    exclusive: true,
+  },
+  {
+    id: 'SL_EN_mod_load_order_file_maker',
+    name: 'SL_EN_mod_load_order_file_maker',
+    executable: () => "SL_EN_mod_load_order_file_maker.bat",
+    requiredFiles: [
+      'SL_EN_mod_load_order_file_maker.bat',
+    ],
+    relative: true,
+    exclusive: true,
+  },
+  {
+    id: 'SL_RU_mod_load_order_file_maker',
+    name: 'SL_RU_mod_load_order_file_maker',
+    executable: () => "SL_RU_mod_load_order_file_maker.bat",
+    requiredFiles: [
+      'SL_RU_mod_load_order_file_maker.bat',
+    ],
+    relative: true,
+    exclusive: true,
+  },
+];
+function prepareForModding(discovery, api) {
+  const toggle_mods_path = path.join(discovery.path, 'toggle_darktide_mods.bat');
+  const mod_framework = path.join(discovery.path, '/mods/dmf');
+  return fs.ensureDirWritableAsync(path.join(discovery.path, 'mods'))
+    .then(
+      () => (checkForTMP(api, toggle_mods_path),checkForMF(api, mod_framework))
+    );
 }
 
-async function setup(discovery) {
-  // Ensure the mods directory exists
-  await fs.ensureDirAsync(path.join(discovery.path, "mods"));
-  await fs.ensureFileAsync(
-    path.join(discovery.path, "mods", "mod_load_order.txt")
-  );
+function checkForMF(api, mod_framework) {
+  return fs.statAsync(mod_framework)
+    .catch(() => {
+      api.sendNotification({
+        id: 'darktide-mod-framework-missing',
+        type: 'warning',
+        title: 'Darktide Mod Framework not installed',
+        message: 'Darktide Mod Framework is required to mod Darktide.',
+        actions: [
+          {
+            title: 'Get DMF',
+            action: () => util.opn("https://www.nexusmods.com/warhammer40kdarktide/mods/8").catch(() => undefined)
+          }
+        ]
+      });
+    });
 }
+function checkForTMP(api, toggle_mods_path) {
+  return fs.statAsync(toggle_mods_path)
+    .catch(() => {
+      api.sendNotification({
+        id: 'toggle_darktide_mods-missing',
+        type: 'warning',
+        title: 'Darktide Mod Loader not installed',
+        message: 'Darktide Mod Loader is required to mod Darktide.',
+        actions: [
+          {
+            title: 'Get DML',
+            action: () => util.opn("https://www.nexusmods.com/warhammer40kdarktide/mods/19").catch(() => undefined)
+          }
+        ]
+      });
+    });
+}
+
+const MOD_FILE_EXT = ".mod";
+const Bat_FILE_EXT = ".bat";
+
+function testSupportedContent(files, gameId){
+  let supported = (gameId === GAME_ID) &&
+    (files.find(file => path.extname(file).toLowerCase() === MOD_FILE_EXT || path.extname(file).toLowerCase() === Bat_FILE_EXT) !== undefined);
+  
+
+  return Promise.resolve({
+    supported,
+    requiredFiles: [],
+  });
+}
+
+function installContentverifier(files){
+  const modFile = files.find(file => path.extname(file).toLowerCase() === MOD_FILE_EXT);
+  if(modFile){
+    return installContentmain(files)
+  }
+  const DML = files.find(file => file.toLowerCase() === "toggle_darktide_mods.bat");
+  if(DML){
+    return install_DML(files)
+  }
+  const mod_load_order_file_maker = files.find(file => path.extname(file).toLowerCase() === Bat_FILE_EXT && file.includes("_mod_load_order_file_maker"));
+  if(mod_load_order_file_maker){
+    return install_mod_load_order_file_maker(files)
+  }
+  
+  return 
+  
+}
+
+function installContentmain(files) {
+  const modFile = files.find(file => path.extname(file).toLowerCase() === MOD_FILE_EXT);
+  const idx = modFile.indexOf(path.basename(modFile));
+  const rootPath = path.dirname(modFile);
+  const modName = path.basename(modFile, MOD_FILE_EXT);
+  const filtered = files.filter(file => 
+    ((file.indexOf(rootPath) !== -1) 
+    && (!file.endsWith(path.sep))));
+  const instructions = filtered.map(file => {
+    return {
+      type: 'copy',
+      source: file,
+      destination: path.join("mods",modName, file.substr(idx)),
+    };
+  });
+  return Promise.resolve({ instructions });
+}
+
+function install_DML(files){
+  const mod_load_order_file_maker = files.find(file => path.extname(file).toLowerCase() === Bat_FILE_EXT);
+  const idx = mod_load_order_file_maker.indexOf(path.basename(mod_load_order_file_maker));
+  const rootPath = path.dirname(mod_load_order_file_maker);
+  const filtered = files.filter(file => 
+    ((file.indexOf(rootPath) !== -1) 
+    && (!file.endsWith(path.sep))));
+  const instructions = filtered.map(file => {
+    return {
+      type: 'copy',
+      source: file,
+      destination: path.join(file.substr(idx)),
+    };
+  });
+  return Promise.resolve({ instructions });
+}
+
+function install_mod_load_order_file_maker(files){
+  const mod_load_order_file_maker = files.find(file => path.extname(file).toLowerCase() === Bat_FILE_EXT);
+  const idx = mod_load_order_file_maker.indexOf(path.basename(mod_load_order_file_maker));
+  const rootPath = path.dirname(mod_load_order_file_maker);
+  const filtered = files.filter(file => 
+    ((file.indexOf(rootPath) !== -1) 
+    && (!file.endsWith(path.sep))));
+  const instructions = filtered.map(file => {
+    return {
+      type: 'copy',
+      source: file,
+      destination: path.join("mods", file.substr(idx)),
+    };
+  });
+  return Promise.resolve({ instructions });
+}
+
+// source code of github https://github.com/Darktide-Mod-Framework/Darktide-Vortex-Extension
 
 async function requiresLauncher() {
   let game = await queryGame();
@@ -45,6 +191,17 @@ async function requiresLauncher() {
       },
     };
   }
+}
+
+async function queryGame() {
+  let game = await util.GameStoreHelper.findByAppId([STEAMAPP_ID, MS_APPID]);
+  return game;
+}
+
+async function queryPath() {
+  // Find the game folder
+  let game = await queryGame();
+  return game.gamePath;
 }
 
 async function deserializeLoadOrder(context) {
@@ -84,8 +241,17 @@ async function deserializeLoadOrder(context) {
       mods[modId] = true;
       return mods;
     } catch (e) {
-      mods[modId] = false;
-      return mods;
+      try {
+        fs.readFileSync(
+          path.join(modFolderPath, modId, `${modId}.mod.vortex_backup`)
+        );
+        mods[modId] = true;
+        return mods;
+      }
+      catch (d){
+        mods[modId] = false;
+        return mods;
+      }
     }
   }, {});
 
@@ -107,7 +273,6 @@ async function deserializeLoadOrder(context) {
     };
   });
 }
-
 async function serializeLoadOrder(_context, loadOrder) {
   let gameDir = await queryPath();
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
@@ -123,37 +288,21 @@ async function serializeLoadOrder(_context, loadOrder) {
     { encoding: "utf8" }
   );
 }
-
-let supportedTools = [
-  {
-    id: "dtkit-patch",
-    name: "Toggle modding (patch/unpatch game files)",
-    executable: () => "tools/dtkit-patch.exe",
-    requiredFiles: ["tools/dtkit-patch.exe"],
-    queryPath,
-  },
-];
+//end source code github
 
 function main(context) {
+  context.registerInstaller('tetstidk-mod', 25, testSupportedContent, installContentverifier);
   context.registerGame({
     id: GAME_ID,
-    name: "Warhammer 40,000: Darktide",
-    shortName: "Darktide",
-    logo: "gameart.png",
-
-    // Removes Nexus/Vortex top level folder
+    name: 'WarHammer 40,000: Darktide',
     mergeMods: true,
-    // Only delete folders tagged as created by Vortex when cleaning up
+    queryPath: findGame,
     directoryCleaning: "tag",
-    // Not required when mergeMods is false
+    supportedTools: tools,
     requiresCleanup: false,
-
-    supportedTools,
-
-    setup,
     requiresLauncher,
-    queryPath,
-    queryModPath: () => "mods",
+    queryModPath: () => '',
+    logo: 'gameart.jpg',
     executable: () => "binaries/Darktide.exe",
     parameters: [
       "--bundle-dir",
@@ -165,12 +314,20 @@ function main(context) {
       "--backend-title-service-url",
       "https://bsp-td-prod.atoma.cloud",
     ],
-    requiredFiles: ["binaries/Darktide.exe"],
+    requiredFiles: [
+      'launcher/Launcher.exe',
+      'binaries/Darktide.exe',
+      'start_protected_game.exe'
+    ],
+    setup: (discovery) => prepareForModding(discovery, context.api),
     environment: {
-      SteamAPPId: STEAM_APPID,
+      SteamAPPId: STEAMAPP_ID,
+    },
+    details: {
+      steamAppId: STEAMAPP_ID,
     },
   });
-
+  //github source code
   context.registerLoadOrder({
     gameId: GAME_ID,
     validate: async () => Promise.resolve(undefined), // no validation implemented yet
@@ -179,10 +336,10 @@ function main(context) {
       await serializeLoadOrder(context, loadOrder),
     toggleableEntries: true,
   });
-
-  return true;
+  //end source code github
+	
+	return true
 }
-
 module.exports = {
-  default: main,
-};
+    default: main,
+  };
