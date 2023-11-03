@@ -327,7 +327,6 @@ function main(context) {
       steamAppId: STEAMAPP_ID,
     },
   });
-  //github source code
   context.registerLoadOrder({
     gameId: GAME_ID,
     validate: async () => Promise.resolve(undefined), // no validation implemented yet
