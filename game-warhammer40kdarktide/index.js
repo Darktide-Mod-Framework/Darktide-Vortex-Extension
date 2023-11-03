@@ -172,7 +172,6 @@ function install_mod_load_order_file_maker(files){
   return Promise.resolve({ instructions });
 }
 
-// source code of github https://github.com/Darktide-Mod-Framework/Darktide-Vortex-Extension
 
 async function requiresLauncher() {
   let game = await queryGame();
