@@ -101,7 +101,7 @@ function testSupportedContent(files, gameId) {
     files.find(
       (file) =>
         path.extname(file).toLowerCase() === MOD_FILE_EXT ||
-        path.extname(file).toLowerCase() === BAT_FILE_EXT
+        (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("_mod_load_order_file_maker"))
     ) !== undefined;
 
   return Promise.resolve({
