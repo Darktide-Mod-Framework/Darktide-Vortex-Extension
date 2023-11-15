@@ -156,22 +156,13 @@ async function installMod(files) {
 }
 
 async function installDML(files) {
-  const gamePath = await queryPath();
-  const mod_load_order_file_maker = files.find(
-    (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT
-  );
-  const idx = mod_load_order_file_maker.indexOf(
-    path.basename(mod_load_order_file_maker)
-  );
-  const rootPath = path.dirname(mod_load_order_file_maker);
-  const filtered = files.filter(
-    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
-  );
-  const instructions = filtered.map((file) => {
+  // Copy all files directly into game folder
+  const instructions = files.filter(file => !file.endsWith(path.sep))
+  .map((file) => {
     return {
       type: "copy",
       source: file,
-      destination: file.substr(idx),
+      destination: file,
     };
   });
   return { instructions };
