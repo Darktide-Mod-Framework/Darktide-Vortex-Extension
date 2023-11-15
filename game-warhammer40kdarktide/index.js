@@ -42,10 +42,10 @@ const tools = [
 ];
 
 // Not sure if there is a more elegant way to get this for patching later
-let GAME_PATH = null
+let GAME_PATH = null;
 
 async function prepareForModding(discovery, api) {
-  GAME_PATH = discovery.path
+  GAME_PATH = discovery.path;
 
   // Ensure the mods directory exists
   await fs.ensureDirWritableAsync(path.join(discovery.path, "mods"));
@@ -375,15 +375,15 @@ function main(context) {
   });
 
   // Didn't check if below events trigger on profiles for other games, so make sure it is for this
-  const should_patch = (profileId) => (selectors.profileById(context.api.getState(), profileId)?.gameId === GAME_ID) && GAME_PATH
+  const should_patch = (profileId) => (selectors.profileById(context.api.getState(), profileId)?.gameId === GAME_ID) && GAME_PATH;
 
   // Patch on deploy
   context.api.onAsync('did-deploy', (profileId) => {
     if (should_patch(profileId)) {
       const proc = child_process.spawn(path.join(GAME_PATH, 'tools', 'dtkit-patch.exe'), ['--patch']);
-      proc.on('error', () => {})
+      proc.on('error', () => {});
     }
-  })
+  });
 
   // Unpatch on purge
   context.api.events.on('will-purge', (profileId) => {
