@@ -377,20 +377,20 @@ function main(context) {
   // Didn't check if below events trigger on profiles for other games, so make sure it is for this
   const is_game_profile = (profileId) => selectors.profileById(context.api.getState(), profileId)?.gameId === GAME_ID
 
-  const run_dtkit_patch_if_game_profile = (profileId, action) => {
+  const run_dtkit_patch_if_game_profile = (profileId, action, sync) => {
     if (is_game_profile(profileId) && GAME_PATH) {
       // dtkit finds the game on its own, we don't care about cwd
-      child_process.spawnSync(path.join(GAME_PATH, 'tools', 'dtkit-patch.exe'), ['--'+action])
+      child_process[sync ? "spawnSync" : "spawn"](path.join(GAME_PATH, 'tools', 'dtkit-patch.exe'), ['--'+action])
     }
   }
 
   // Patch on deploy
-  context.api.events.on('did-deploy', (profileId) => {
+  context.api.onAsync('did-deploy', (profileId) => {
     run_dtkit_patch_if_game_profile(profileId, 'patch')
   })
   // Unpatch on purge
   context.api.events.on('will-purge', (profileId) => {
-    run_dtkit_patch_if_game_profile(profileId, 'unpatch')
+    run_dtkit_patch_if_game_profile(profileId, 'unpatch', true)
   })
 
   return true;
