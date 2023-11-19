@@ -1,5 +1,9 @@
 const path = require("path");
-const { fs, log, util } = require("vortex-api");
+const { fs, log, util, selectors } = require("vortex-api");
+
+const child_process = require("child_process");
+
+const { profile } = require("console");
 
 // Nexus Mods domain for the game. e.g. nexusmods.com/warhammer40kdarktide
 const GAME_ID = "warhammer40kdarktide";
@@ -37,7 +41,12 @@ const tools = [
   },
 ];
 
+// Not sure if there is a more elegant way to get this for patching later
+let GAME_PATH = null;
+
 async function prepareForModding(discovery, api) {
+  GAME_PATH = discovery.path;
+
   // Ensure the mods directory exists
   await fs.ensureDirWritableAsync(path.join(discovery.path, "mods"));
 
@@ -363,6 +372,28 @@ function main(context) {
     serializeLoadOrder: async (loadOrder) =>
       await serializeLoadOrder(context, loadOrder),
     toggleableEntries: true,
+  });
+
+  // Didn't check if below events trigger on profiles for other games, so make sure it is for this
+  const should_patch = (profileId) => (selectors.profileById(context.api.getState(), profileId)?.gameId === GAME_ID) && GAME_PATH;
+
+  // Patch on deploy
+  context.api.onAsync('did-deploy', (profileId) => {
+    if (should_patch(profileId)) {
+      const proc = child_process.spawn(path.join(GAME_PATH, 'tools', 'dtkit-patch.exe'), ['--patch']);
+      proc.on('error', () => {});
+    }
+  });
+
+  // Unpatch on purge
+  context.api.events.on('will-purge', (profileId) => {
+    if (should_patch(profileId)) {
+      try {
+        child_process.spawnSync(path.join(GAME_PATH, 'tools', 'dtkit-patch.exe'), ['--unpatch']);
+      }
+      catch (e) {
+      }
+    }
   });
 
   return true;
