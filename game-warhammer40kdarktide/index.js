@@ -10,6 +10,10 @@ const STEAMAPP_ID = "1361210";
 // Microsoft Store app id (gamepass)
 const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
+//for mod update to keep them in the load order and not uncheck them
+let mod_update = false
+let updatemodid = "";
+
 const tools = [
   {
     id: "ToggleMods",
@@ -108,8 +112,7 @@ function testSupportedContent(files, gameId) {
     files.find(
       (file) =>
         path.extname(file).toLowerCase() === MOD_FILE_EXT ||
-        (path.extname(file).toLowerCase() === BAT_FILE_EXT &&
-          file.includes("_mod_load_order_file_maker"))
+        (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("_mod_load_order_file_maker"))
     ) !== undefined;
 
   return Promise.resolve({
@@ -236,6 +239,10 @@ async function requiresLauncher() {
 }
 
 async function deserializeLoadOrder(context) {
+
+if(mod_update){
+  return;
+}
   let gameDir = await queryPath();
 
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
@@ -305,6 +312,9 @@ async function deserializeLoadOrder(context) {
 }
 
 async function serializeLoadOrder(_context, loadOrder) {
+  if(mod_update){
+    return;
+  }
   let gameDir = await queryPath();
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
 
@@ -380,6 +390,9 @@ function main(context) {
 
   // Patch on deploy
   context.api.onAsync("did-deploy", (profileId) => {
+    if(mod_update){
+      mod_update=false
+    }
     if (should_patch(profileId)) {
       const proc = child_process.spawn(
         path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
@@ -398,6 +411,16 @@ function main(context) {
           ["--unpatch"]
         );
       } catch (e) {}
+    }
+  });
+
+  context.api.events.on('mod-update', (gameId,modId) => {
+    updatemodid=modId
+  });
+  
+  context.api.events.on('remove-mod', (gameMode,modId) => {
+    if(modId.includes("-"+updatemodid+"-")){
+      mod_update=true
     }
   });
 
