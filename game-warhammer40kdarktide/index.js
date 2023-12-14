@@ -388,41 +388,46 @@ function main(context) {
     selectors.profileById(context.api.getState(), profileId)?.gameId ===
       GAME_ID && GAME_PATH;
 
-  // Patch on deploy
-  context.api.onAsync("did-deploy", (profileId) => {
-    if(mod_update){
-      mod_update=false
-    }
-    if (should_patch(profileId)) {
-      const proc = child_process.spawn(
-        path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
-        ["--patch"]
-      );
-      proc.on("error", () => {});
-    }
-  });
-
-  // Unpatch on purge
-  context.api.events.on("will-purge", (profileId) => {
-    if (should_patch(profileId)) {
-      try {
-        child_process.spawnSync(
-          path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
-          ["--unpatch"]
-        );
-      } catch (e) {}
-    }
-  });
-
-  context.api.events.on('mod-update', (gameId,modId) => {
-    updatemodid=modId
-  });
   
-  context.api.events.on('remove-mod', (gameMode,modId) => {
-    if(modId.includes("-"+updatemodid+"-")){
-      mod_update=true
-    }
-  });
+  context.once(() => {
+    // Patch on deploy
+    context.api.onAsync("did-deploy", (profileId) => {
+      if(mod_update){
+        mod_update=false
+      }
+      if (should_patch(profileId)) {
+        const proc = child_process.spawn(
+          path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
+          ["--patch"]
+        );
+        proc.on("error", () => {});
+      }
+    });
+
+    // Unpatch on purge
+    context.api.events.on("will-purge", (profileId) => {
+      if (should_patch(profileId)) {
+        try {
+          child_process.spawnSync(
+            path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
+            ["--unpatch"]
+          );
+        } catch (e) {}
+      }
+    });
+
+    context.api.events.on('mod-update', (gameId,modId,fileId) => {
+      if(GAME_ID==gameId){
+        updatemodid=modId
+      }
+    });
+    
+    context.api.events.on('remove-mod', (gameMode,modId) => {
+      if(modId.includes("-"+updatemodid+"-")){
+        mod_update=true
+      }
+    });
+  })
 
   return true;
 }
