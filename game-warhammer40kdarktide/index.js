@@ -363,7 +363,6 @@ function main(context) {
     requiredFiles: [
       "launcher/Launcher.exe",
       "binaries/Darktide.exe",
-      "start_protected_game.exe",
     ],
     setup: async (discovery) => await prepareForModding(discovery, context.api),
     environment: {
