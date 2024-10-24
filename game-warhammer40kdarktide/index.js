@@ -267,7 +267,9 @@ if(mod_update){
     } catch (e) {
       return false;
     }
-  });
+  })
+  //no impact on Capital letters for the mod load order
+  .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
   // This is the most reliable way I could find to detect if a mod
   // is managed by Vortex
@@ -300,7 +302,7 @@ if(mod_update){
   let allMods = Array.from(new Set([...loadOrder, ...modFolders]))
     // dmf is always loaded first
     .filter((modId) => modId !== "dmf");
-
+    
   return allMods.map((modId) => {
     return {
       id: modId,
