@@ -11,8 +11,9 @@ const STEAMAPP_ID = "1361210";
 const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
 //for mod update to keep them in the load order and not uncheck them
-let mod_update = false
+let mod_update_all_profile = false;
 let updatemodid = "";
+
 
 const tools = [
   {
@@ -240,9 +241,20 @@ async function requiresLauncher() {
 
 async function deserializeLoadOrder(context) {
 
-if(mod_update){
-  return;
-}
+  //on mod update for all profile it would cause the mod if it was selected to be unselected
+  if(mod_update_all_profile){
+    let allMods = Array("mod_update")
+      
+    return allMods.map((modId) => {
+      return {
+        id: "mod update in progress, please wait. Refresh when finished. \n To avoid this wait, only update current profile",
+        modId:  modId,
+        enabled: false,
+      };
+    });
+    return;
+  }
+
   let gameDir = await queryPath();
 
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
@@ -314,7 +326,7 @@ if(mod_update){
 }
 
 async function serializeLoadOrder(_context, loadOrder) {
-  if(mod_update){
+  if(mod_update_all_profile){
     return;
   }
   let gameDir = await queryPath();
@@ -393,8 +405,8 @@ function main(context) {
   context.once(() => {
     // Patch on deploy
     context.api.onAsync("did-deploy", (profileId) => {
-      if(mod_update){
-        mod_update=false
+      if(mod_update_all_profile){
+        mod_update_all_profile=false
       }
       if (should_patch(profileId)) {
         const proc = child_process.spawn(
@@ -404,7 +416,7 @@ function main(context) {
         proc.on("error", () => {});
       }
     });
-
+    
     // Unpatch on purge
     context.api.events.on("will-purge", (profileId) => {
       if (should_patch(profileId)) {
@@ -416,18 +428,26 @@ function main(context) {
         } catch (e) {}
       }
     });
-
+    
     context.api.events.on('mod-update', (gameId,modId,fileId) => {
       if(GAME_ID==gameId){
         updatemodid=modId
       }
     });
     
-    context.api.events.on('remove-mod', (gameMode,modId) => {
-      if(modId.includes("-"+updatemodid+"-")){
-        mod_update=true
+    context.api.events.on('will-remove-mods', (gameId,modId,err) => {
+      if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
+        mod_update_all_profile=true
       }
     });
+    
+
+    context.api.events.on('did-install-mod', async (gameId, archiveId, modId)=>{
+      if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
+        mod_update_all_profile=false
+      }
+    })
+
   })
 
   return true;
