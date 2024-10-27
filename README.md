@@ -1,11 +1,17 @@
 # Darktide Vortex Extension
 
 ## Installation
+Download [Vortex](https://www.nexusmods.com/about/vortex/).
+
+## Easiest:
+1. Launch Vortex
+2. Go to the games section on the left
+3. Search for darktide and click on manage, it'll install the extension and relaunch Vortex.
 
 **Download the extension directly from Nexus Mods: https://www.nexusmods.com/site/mods/684**
 
 ### Manually
-1. Download [game-warhammer40kdarktide.zip](https://github.com/danreeves/vortex-extension-darktide/releases/latest)
+1. Download [Darktide Vortex Extension](https://www.nexusmods.com/site/mods/684)
 2. In Vortex go to the Extensions tab
 3. Either drag the zip into the "Drop file(s)" area or click it to browse for the zip
 4. Searching the extensions page for "darktide" should now show "Game: Warhammer 40,000: Darktide" installed and enabled
