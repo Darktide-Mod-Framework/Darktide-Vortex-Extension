@@ -13,6 +13,40 @@ const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 //for mod update to keep them in the load order and not uncheck them
 let mod_update_all_profile = false;
 let updatemodid = "";
+//used to see if it's a mod update or not
+let updating_mod = false;
+//used to display the name of the currently installed mod
+let mod_install_name = "";
+
+
+let api = false;//useful where we can't access context or API
+
+function warning_root_install(){
+  
+  if(!api){
+    console.log("Darktide-Root-Install : api is not defined could not send notif")
+    return
+  }
+  api.sendNotification({
+    id: 'Darktide-Root-Install-'+mod_install_name,//added the name to the id otherwise in case of bulk install it would delete the one before
+    type: 'warning',
+    message: mod_install_name+" will be installed in the root directory of the game. If it's normal just ignore this warning",
+    allowSuppress: true,
+  });
+}
+function not_supported_root_install(){
+  
+  if(!api){
+    console.log("Darktide not supported root install : api is not defined could not send notif")
+    return
+  }
+  api.sendNotification({
+    id: 'Darktide-Unsupported-Root-Install-'+mod_install_name,//same as before
+    type: 'warning',
+    message: mod_install_name+" could not pass our support test, it'll be installed in the root directory",
+    allowSuppress: true,
+  });
+}
 
 
 const tools = [
@@ -113,9 +147,13 @@ function testSupportedContent(files, gameId) {
     files.find(
       (file) =>
         path.extname(file).toLowerCase() === MOD_FILE_EXT ||
+        (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("toggle_darktide_mods")) ||
         (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("_mod_load_order_file_maker"))
     ) !== undefined;
-
+  //Do not resend the alert in case of updates
+  if(!supported && !updating_mod){
+    not_supported_root_install()
+  }
   return Promise.resolve({
     supported,
     requiredFiles: [],
@@ -123,18 +161,15 @@ function testSupportedContent(files, gameId) {
 }
 
 async function installContent(files) {
+
   const modFile = files.find(
     (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT
   );
-  if (modFile) {
+  //other checks to see if it should be installed only in the /mods folder
+  if (modFile && modFile.split("\\").length < 3) {
     return installMod(files);
   }
-  const DML = files.find(
-    (file) => file.toLowerCase() === "toggle_darktide_mods.bat"
-  );
-  if (DML) {
-    return installDML(files);
-  }
+
   const mod_load_order_file_maker = files.find(
     (file) =>
       path.extname(file).toLowerCase() === BAT_FILE_EXT &&
@@ -144,13 +179,35 @@ async function installContent(files) {
     return install_mod_load_order_file_maker(files);
   }
 
-  return;
+  return root_game_install(files);
+}
+
+async function root_game_install(files){
+  //check for DML, we could add other mod here as well
+  supported_root = files.find((file) =>  (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("toggle_darktide_mods")))
+  //Do not resend the alert in case of updates
+  if(!supported_root && !updating_mod){warning_root_install()}
+
+  //you always need to filter and everything
+  const rootPath = "";
+  const filtered = files.filter(
+    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
+  );
+  const instructions = filtered.map((file) => {
+    return {
+      type: "copy",
+      source: file,
+      destination: path.join("",file),
+    };
+  });
+  return { instructions };
 }
 
 async function installMod(files) {
   const modFile = files.find(
     (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT
   );
+
   const idx = modFile.indexOf(path.basename(modFile));
   const rootPath = path.dirname(modFile);
   const modName = path.basename(modFile, MOD_FILE_EXT);
@@ -165,28 +222,7 @@ async function installMod(files) {
     };
   });
   return { instructions };
-}
 
-async function installDML(files) {
-  const gamePath = await queryPath();
-  const mod_load_order_file_maker = files.find(
-    (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT
-  );
-  const idx = mod_load_order_file_maker.indexOf(
-    path.basename(mod_load_order_file_maker)
-  );
-  const rootPath = path.dirname(mod_load_order_file_maker);
-  const filtered = files.filter(
-    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
-  );
-  const instructions = filtered.map((file) => {
-    return {
-      type: "copy",
-      source: file,
-      destination: file.substr(idx),
-    };
-  });
-  return { instructions };
 }
 
 async function install_mod_load_order_file_maker(files) {
@@ -252,7 +288,6 @@ async function deserializeLoadOrder(context) {
         enabled: false,
       };
     });
-    return;
   }
 
   let gameDir = await queryPath();
@@ -403,10 +438,12 @@ function main(context) {
 
   
   context.once(() => {
+    api = context.api
     // Patch on deploy
     context.api.onAsync("did-deploy", (profileId) => {
       if(mod_update_all_profile){
         mod_update_all_profile=false
+        updating_mod=false
       }
       if (should_patch(profileId)) {
         const proc = child_process.spawn(
@@ -432,6 +469,8 @@ function main(context) {
     context.api.events.on('mod-update', (gameId,modId,fileId) => {
       if(GAME_ID==gameId){
         updatemodid=modId
+        updating_mod=false
+        mod_update_all_profile=false
       }
     });
     
@@ -441,10 +480,20 @@ function main(context) {
       }
     });
     
+    context.api.events.on('will-install-mod', (gameId,_,modId) => {
+      mod_install_name = modId.split("-")[0]
+      if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
+        updating_mod=true
+      }
+      else{
+        updating_mod=false
+      }
+    });
 
     context.api.events.on('did-install-mod', async (gameId, archiveId, modId)=>{
       if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
         mod_update_all_profile=false
+        updating_mod=false
       }
     })
 
