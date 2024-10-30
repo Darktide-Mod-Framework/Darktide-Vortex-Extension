@@ -10,44 +10,49 @@ const STEAMAPP_ID = "1361210";
 // Microsoft Store app id (gamepass)
 const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
-//for mod update to keep them in the load order and not uncheck them
+// for mod update to keep them in the load order and not uncheck them
 let mod_update_all_profile = false;
 let updatemodid = "";
-//used to see if it's a mod update or not
+// used to see if it's a mod update or not
 let updating_mod = false;
-//used to display the name of the currently installed mod
+// used to display the name of the currently installed mod
 let mod_install_name = "";
 
+let api = false; // useful where we can't access context or API
 
-let api = false;//useful where we can't access context or API
-
-function warning_root_install(){
-  
-  if(!api){
-    console.log("Darktide-Root-Install : api is not defined could not send notif")
-    return
+function warning_root_install() {
+  if (!api) {
+    console.log(
+      "Darktide-Root-Install : api is not defined could not send notif",
+    );
+    return;
   }
   api.sendNotification({
-    id: 'Darktide-Root-Install-'+mod_install_name,//added the name to the id otherwise in case of bulk install it would delete the one before
-    type: 'warning',
-    message: mod_install_name+" will be installed in the root directory of the game. If it's normal just ignore this warning",
-    allowSuppress: true,
-  });
-}
-function not_supported_root_install(){
-  
-  if(!api){
-    console.log("Darktide not supported root install : api is not defined could not send notif")
-    return
-  }
-  api.sendNotification({
-    id: 'Darktide-Unsupported-Root-Install-'+mod_install_name,//same as before
-    type: 'warning',
-    message: mod_install_name+" could not pass our support test, it'll be installed in the root directory",
+    id: "Darktide-Root-Install-" + mod_install_name, // added the name to the id otherwise in case of bulk install it would delete the one before
+    type: "warning",
+    message:
+      mod_install_name +
+      " will be installed in the root directory of the game. If it's normal just ignore this warning",
     allowSuppress: true,
   });
 }
 
+function not_supported_root_install() {
+  if (!api) {
+    console.log(
+      "Darktide not supported root install : api is not defined could not send notif",
+    );
+    return;
+  }
+  api.sendNotification({
+    id: "Darktide-Unsupported-Root-Install-" + mod_install_name, //same as before
+    type: "warning",
+    message:
+      mod_install_name +
+      " could not pass our support test, it'll be installed in the root directory",
+    allowSuppress: true,
+  });
+}
 
 const tools = [
   {
@@ -89,7 +94,7 @@ async function prepareForModding(discovery, api) {
 
   // Ensure the mod load order file exists
   await fs.ensureFileAsync(
-    path.join(discovery.path, "mods", "mod_load_order.txt")
+    path.join(discovery.path, "mods", "mod_load_order.txt"),
   );
 
   // Check if DMF is installed
@@ -118,6 +123,7 @@ function checkForDMF(api, mod_framework) {
     });
   });
 }
+
 function checkForDML(api, toggle_mods_path) {
   return fs.statAsync(toggle_mods_path).catch(() => {
     api.sendNotification({
@@ -147,13 +153,17 @@ function testSupportedContent(files, gameId) {
     files.find(
       (file) =>
         path.extname(file).toLowerCase() === MOD_FILE_EXT ||
-        (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("toggle_darktide_mods")) ||
-        (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("_mod_load_order_file_maker"))
+        (path.extname(file).toLowerCase() === BAT_FILE_EXT &&
+          file.includes("toggle_darktide_mods")) ||
+        (path.extname(file).toLowerCase() === BAT_FILE_EXT &&
+          file.includes("_mod_load_order_file_maker")),
     ) !== undefined;
-  //Do not resend the alert in case of updates
-  if(!supported && !updating_mod){
-    not_supported_root_install()
+
+  // Do not resend the alert in case of updates
+  if (!supported && !updating_mod) {
+    not_supported_root_install();
   }
+
   return Promise.resolve({
     supported,
     requiredFiles: [],
@@ -161,11 +171,11 @@ function testSupportedContent(files, gameId) {
 }
 
 async function installContent(files) {
-
   const modFile = files.find(
-    (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT
+    (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT,
   );
-  //other checks to see if it should be installed only in the /mods folder
+
+  // other checks to see if it should be installed only in the /mods folder
   if (modFile && modFile.split("\\").length < 3) {
     return installMod(files);
   }
@@ -173,8 +183,9 @@ async function installContent(files) {
   const mod_load_order_file_maker = files.find(
     (file) =>
       path.extname(file).toLowerCase() === BAT_FILE_EXT &&
-      file.includes("_mod_load_order_file_maker")
+      file.includes("_mod_load_order_file_maker"),
   );
+
   if (mod_load_order_file_maker) {
     return install_mod_load_order_file_maker(files);
   }
@@ -182,22 +193,29 @@ async function installContent(files) {
   return root_game_install(files);
 }
 
-async function root_game_install(files){
-  //check for DML, we could add other mod here as well
-  supported_root = files.find((file) =>  (path.extname(file).toLowerCase() === BAT_FILE_EXT && file.includes("toggle_darktide_mods")))
-  //Do not resend the alert in case of updates
-  if(!supported_root && !updating_mod){warning_root_install()}
+async function root_game_install(files) {
+  // check for DML, we could add other mod here as well
+  const supported_root = files.find(
+    (file) =>
+      path.extname(file).toLowerCase() === BAT_FILE_EXT &&
+      file.includes("toggle_darktide_mods"),
+  );
 
-  //you always need to filter and everything
+  // Do not resend the alert in case of updates
+  if (!supported_root && !updating_mod) {
+    warning_root_install();
+  }
+
+  // you always need to filter and everything
   const rootPath = "";
   const filtered = files.filter(
-    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
+    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep),
   );
   const instructions = filtered.map((file) => {
     return {
       type: "copy",
       source: file,
-      destination: path.join("",file),
+      destination: path.join("", file),
     };
   });
   return { instructions };
@@ -205,14 +223,13 @@ async function root_game_install(files){
 
 async function installMod(files) {
   const modFile = files.find(
-    (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT
+    (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT,
   );
-
   const idx = modFile.indexOf(path.basename(modFile));
   const rootPath = path.dirname(modFile);
   const modName = path.basename(modFile, MOD_FILE_EXT);
   const filtered = files.filter(
-    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
+    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep),
   );
   const instructions = filtered.map((file) => {
     return {
@@ -222,19 +239,18 @@ async function installMod(files) {
     };
   });
   return { instructions };
-
 }
 
 async function install_mod_load_order_file_maker(files) {
   const mod_load_order_file_maker = files.find(
-    (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT
+    (file) => path.extname(file).toLowerCase() === BAT_FILE_EXT,
   );
   const idx = mod_load_order_file_maker.indexOf(
-    path.basename(mod_load_order_file_maker)
+    path.basename(mod_load_order_file_maker),
   );
   const rootPath = path.dirname(mod_load_order_file_maker);
   const filtered = files.filter(
-    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep)
+    (file) => file.indexOf(rootPath) !== -1 && !file.endsWith(path.sep),
   );
   const instructions = filtered.map((file) => {
     return {
@@ -276,15 +292,14 @@ async function requiresLauncher() {
 }
 
 async function deserializeLoadOrder(context) {
+  // on mod update for all profile it would cause the mod if it was selected to be unselected
+  if (mod_update_all_profile) {
+    let allMods = Array("mod_update");
 
-  //on mod update for all profile it would cause the mod if it was selected to be unselected
-  if(mod_update_all_profile){
-    let allMods = Array("mod_update")
-      
     return allMods.map((modId) => {
       return {
         id: "mod update in progress, please wait. Refresh when finished. \n To avoid this wait, only update current profile",
-        modId:  modId,
+        modId: modId,
         enabled: false,
       };
     });
@@ -297,85 +312,87 @@ async function deserializeLoadOrder(context) {
     encoding: "utf8",
   });
 
-  let loadOrder = loadOrderFile
-    .split("\n")
-    .map((line) => line.trim())
-    // mod_load_order.txt supports lua comments, remove those lines
-    .filter((line) => !line.startsWith("--"));
-
   let modFolderPath = path.join(gameDir, "mods");
-  let modFolders = await fs.readdirAsync(modFolderPath);
-
-  // Filter any files/folders out that don't contain ModName.mod
-  modFolders = modFolders.filter((fileName) => {
-    try {
-      fs.readFileSync(path.join(modFolderPath, fileName, `${fileName}.mod`));
-      return true;
-    } catch (e) {
-      return false;
-    }
-  })
-  //no impact on Capital letters for the mod load order
-  .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+  let modFolders = fs
+    .readdirSync(modFolderPath)
+    // Filter any files/folders out that don't contain ModName.mod
+    .filter((fileName) => {
+      try {
+        fs.readFileSync(path.join(modFolderPath, fileName, `${fileName}.mod`));
+        return true;
+      } catch (e) {
+        return false;
+      }
+    })
+    // Ignore case when sorting
+    .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
   // This is the most reliable way I could find to detect if a mod
   // is managed by Vortex
-  let vortexManaged = modFolders.reduce((mods, modId) => {
+  function isVortexManaged(modId) {
     try {
       fs.readFileSync(
-        path.join(modFolderPath, modId, `__folder_managed_by_vortex`)
+        path.join(modFolderPath, modId, `__folder_managed_by_vortex`),
       );
-      mods[modId] = true;
-      return mods;
+      return true;
     } catch (e) {
       try {
         fs.readFileSync(
-          path.join(modFolderPath, modId, `${modId}.mod.vortex_backup`)
+          path.join(modFolderPath, modId, `${modId}.mod.vortex_backup`),
         );
-        mods[modId] = true;
-        return mods;
+        return true;
       } catch (d) {
-        mods[modId] = false;
-        return mods;
+        return false;
       }
     }
-  }, {});
+  }
 
-  // Remove any mods from the mod_load_order that don't have corresponding
-  // mods in the file system
-  loadOrder = loadOrder.filter((modId) => modFolders.includes(modId));
+  let loadOrder = loadOrderFile
+    .split("\n")
+    .map((line) => {
+      const id = line.replace(/-- /g, "").trim();
+      return {
+        id,
+        modId: isVortexManaged(id) ? id : undefined,
+        enabled: !line.startsWith("--"),
+      };
+    })
+    // Remove any mods from the mod_load_order that don't have corresponding
+    // mods in the file system
+    .filter((mod) => modFolders.includes(mod.id))
+    .filter((mod) => mod.id !== "dmf" && mod.id !== "base");
 
-  // Dedupes the loadOrder and the modFolders, with non-enabled mods last
-  let allMods = Array.from(new Set([...loadOrder, ...modFolders]))
-    // dmf is always loaded first
-    .filter((modId) => modId !== "dmf");
-    
-  return allMods.map((modId) => {
-    return {
-      id: modId,
-      // Add mod id to remove "Not managed by Vortex" message
-      modId: vortexManaged[modId] ? modId : undefined,
-      enabled: loadOrder.includes(modId),
-    };
-  });
+  for (let folder of modFolders) {
+    if (folder !== "dmf" && folder !== "base") {
+      if (!loadOrder.find((mod) => mod.id === folder)) {
+        loadOrder.push({
+          id: folder,
+          modId: undefined,
+          enabled: false,
+        });
+      }
+    }
+  }
+
+  return loadOrder;
 }
 
 async function serializeLoadOrder(_context, loadOrder) {
-  if(mod_update_all_profile){
+  if (mod_update_all_profile) {
     return;
   }
+  
   let gameDir = await queryPath();
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
 
   let loadOrderOutput = loadOrder
-    .filter((mod) => mod.enabled)
-    .map((mod) => mod.id)
+    .map((mod) => (mod.enabled ? mod.id : `-- ${mod.id}`))
     .join("\n");
 
   return fs.writeFileAsync(
     loadOrderPath,
     `-- File managed by Vortex mod manager\n${loadOrderOutput}`,
-    { encoding: "utf8" }
+    { encoding: "utf8" },
   );
 }
 
@@ -384,7 +401,7 @@ function main(context) {
     "warhammer40kdarktide-mod",
     25,
     testSupportedContent,
-    installContent
+    installContent,
   );
 
   context.registerGame({
@@ -409,10 +426,7 @@ function main(context) {
       "--backend-title-service-url",
       "https://bsp-td-prod.atoma.cloud",
     ],
-    requiredFiles: [
-      "launcher/Launcher.exe",
-      "binaries/Darktide.exe",
-    ],
+    requiredFiles: ["launcher/Launcher.exe", "binaries/Darktide.exe"],
     setup: async (discovery) => await prepareForModding(discovery, context.api),
     environment: {
       SteamAPPId: STEAMAPP_ID,
@@ -436,68 +450,68 @@ function main(context) {
     selectors.profileById(context.api.getState(), profileId)?.gameId ===
       GAME_ID && GAME_PATH;
 
-  
   context.once(() => {
-    api = context.api
+    api = context.api;
     // Patch on deploy
     context.api.onAsync("did-deploy", (profileId) => {
-      if(mod_update_all_profile){
-        mod_update_all_profile=false
-        updating_mod=false
+      if (mod_update_all_profile) {
+        mod_update_all_profile = false;
+        updating_mod = false;
       }
       if (should_patch(profileId)) {
         const proc = child_process.spawn(
           path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
-          ["--patch"]
+          ["--patch"],
         );
         proc.on("error", () => {});
       }
     });
-    
+
     // Unpatch on purge
     context.api.events.on("will-purge", (profileId) => {
       if (should_patch(profileId)) {
         try {
           child_process.spawnSync(
             path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
-            ["--unpatch"]
+            ["--unpatch"],
           );
         } catch (e) {}
       }
     });
-    
-    context.api.events.on('mod-update', (gameId,modId,fileId) => {
-      if(GAME_ID==gameId){
-        updatemodid=modId
-        updating_mod=false
-        mod_update_all_profile=false
-      }
-    });
-    
-    context.api.events.on('will-remove-mods', (gameId,modId,err) => {
-      if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
-        mod_update_all_profile=true
-      }
-    });
-    
-    context.api.events.on('will-install-mod', (gameId,_,modId) => {
-      mod_install_name = modId.split("-")[0]
-      if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
-        updating_mod=true
-      }
-      else{
-        updating_mod=false
+
+    context.api.events.on("mod-update", (gameId, modId, fileId) => {
+      if (GAME_ID == gameId) {
+        updatemodid = modId;
+        updating_mod = false;
+        mod_update_all_profile = false;
       }
     });
 
-    context.api.events.on('did-install-mod', async (gameId, archiveId, modId)=>{
-      if(GAME_ID==gameId && modId.includes("-"+updatemodid+"-")){
-        mod_update_all_profile=false
-        updating_mod=false
+    context.api.events.on("will-remove-mods", (gameId, modId, err) => {
+      if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
+        mod_update_all_profile = true;
       }
-    })
+    });
 
-  })
+    context.api.events.on("will-install-mod", (gameId, _, modId) => {
+      mod_install_name = modId.split("-")[0];
+      if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
+        updating_mod = true;
+      } else {
+        updating_mod = false;
+      }
+    });
+
+    context.api.events.on(
+      "did-install-mod",
+      async (gameId, archiveId, modId) => {
+        if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
+          mod_update_all_profile = false;
+          updating_mod = false;
+        }
+      },
+    );
+  });
 
   return true;
 }

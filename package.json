@@ -1,0 +1,11 @@
+{
+  "name": "vortex-extension-darktide",
+  "private": true,
+  "scripts": {
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@tsconfig/recommended": "^1.0.8",
+    "prettier": "^3.3.3"
+  }
+}
