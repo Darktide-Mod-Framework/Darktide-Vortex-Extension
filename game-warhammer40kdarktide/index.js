@@ -12,13 +12,27 @@ const MS_APPID = "FatsharkAB.Warhammer40000DarktideNew";
 
 // for mod update to keep them in the load order and not uncheck them
 let mod_update_all_profile = false;
-let updatemodid = "";
+let updatemodid = undefined;
 // used to see if it's a mod update or not
 let updating_mod = false;
 // used to display the name of the currently installed mod
 let mod_install_name = "";
 
-let api = false; // useful where we can't access context or API
+let api = false; // useful where we can't access API
+
+let log_call = 0; // to avoid a notif not appearing due to having the same id
+function log(message) {
+  if (!api) {
+    console.log("Darktide-log : api is not defined could not send notif");
+    return;
+  }
+  api.sendNotification({
+    id: "log-" + message + log_call++,
+    type: "warning",
+    message: message,
+    allowSuppress: true,
+  });
+}
 
 function warning_root_install() {
   if (!api) {
@@ -292,8 +306,10 @@ async function requiresLauncher() {
 }
 
 async function deserializeLoadOrder(context) {
+  //log("deser")
   // on mod update for all profile it would cause the mod if it was selected to be unselected
   if (mod_update_all_profile) {
+    //log("catched deser")
     let allMods = Array("mod_update");
 
     return allMods.map((modId) => {
@@ -303,6 +319,7 @@ async function deserializeLoadOrder(context) {
         enabled: false,
       };
     });
+    return;
   }
 
   let gameDir = await queryPath();
@@ -454,10 +471,10 @@ function main(context) {
     api = context.api;
     // Patch on deploy
     context.api.onAsync("did-deploy", (profileId) => {
-      if (mod_update_all_profile) {
-        mod_update_all_profile = false;
-        updating_mod = false;
-      }
+      //log("did-deploy")
+      mod_update_all_profile = false;
+      updating_mod = false;
+      updatemodid = undefined;
       if (should_patch(profileId)) {
         const proc = child_process.spawn(
           path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
@@ -482,35 +499,24 @@ function main(context) {
     context.api.events.on("mod-update", (gameId, modId, fileId) => {
       if (GAME_ID == gameId) {
         updatemodid = modId;
-        updating_mod = false;
-        mod_update_all_profile = false;
       }
     });
 
-    context.api.events.on("will-remove-mods", (gameId, modId, err) => {
-      if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
+    context.api.events.on("remove-mod", (gameMode, modId) => {
+      if (modId.includes("-" + updatemodid + "-")) {
+        //log('remove-mod')
         mod_update_all_profile = true;
       }
     });
 
     context.api.events.on("will-install-mod", (gameId, _, modId) => {
-      mod_install_name = modId.split("-")[0];
       if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
+        //log("will-install-mod")
         updating_mod = true;
       } else {
         updating_mod = false;
       }
     });
-
-    context.api.events.on(
-      "did-install-mod",
-      async (gameId, archiveId, modId) => {
-        if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
-          mod_update_all_profile = false;
-          updating_mod = false;
-        }
-      },
-    );
   });
 
   return true;
