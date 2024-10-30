@@ -368,7 +368,7 @@ async function deserializeLoadOrder(context) {
         loadOrder.push({
           id: folder,
           modId: undefined,
-          enabled: false,
+          enabled: true,
         });
       }
     }
@@ -381,7 +381,7 @@ async function serializeLoadOrder(_context, loadOrder) {
   if (mod_update_all_profile) {
     return;
   }
-  
+
   let gameDir = await queryPath();
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
 
