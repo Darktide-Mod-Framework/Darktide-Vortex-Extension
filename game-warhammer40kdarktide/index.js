@@ -19,52 +19,38 @@ let updating_mod = false;
 let mod_install_name = "";
 
 let api = false; // useful where we can't access API
+const state= () => api.getState(); //get the state from anywhere
+const is_darktide_profile_active = () => selectors.activeGameId(state()) === GAME_ID;
 
-let log_call = 0; // to avoid a notif not appearing due to having the same id
+
+
+let warn_call = 0; // to avoid a notif not appearing due to having the same id
 function log(message) {
   if (!api) {
     console.log("Darktide-log : api is not defined could not send notif");
     return;
   }
   api.sendNotification({
-    id: "log-" + message + log_call++,
+    id: "log-" + message + warn_call++,
     type: "warning",
     message: message,
     allowSuppress: true,
   });
 }
 
-function warning_root_install() {
-  if (!api) {
-    console.log(
-      "Darktide-Root-Install : api is not defined could not send notif",
-    );
-    return;
-  }
-  api.sendNotification({
-    id: "Darktide-Root-Install-" + mod_install_name, // added the name to the id otherwise in case of bulk install it would delete the one before
-    type: "warning",
-    message:
-      mod_install_name +
-      " will be installed in the root directory of the game. If it's normal just ignore this warning",
-    allowSuppress: true,
-  });
-}
 
-function not_supported_root_install() {
+function api_warning(ID,message,supress){
   if (!api) {
     console.log(
-      "Darktide not supported root install : api is not defined could not send notif",
+      "Darktide-"+ ID +" : api is not defined could not send notif",
     );
     return;
   }
   api.sendNotification({
-    id: "Darktide-Unsupported-Root-Install-" + mod_install_name, //same as before
+    id: "Darktide-" +ID+"-"+warn_call++, 
     type: "warning",
-    message:
-      mod_install_name +
-      " could not pass our support test, it'll be installed in the root directory",
-    allowSuppress: true,
+    message:message,
+    allowSuppress: (supress=== undefined || supress) ? true : false,
   });
 }
 
@@ -175,7 +161,9 @@ function testSupportedContent(files, gameId) {
 
   // Do not resend the alert in case of updates
   if (!supported && !updating_mod) {
-    not_supported_root_install();
+    api_warning("Unsupported-Root-Install-" + mod_install_name,
+      mod_install_name +" could not pass our support test, it'll be installed in the root directory"
+    )
   }
 
   return Promise.resolve({
@@ -217,7 +205,9 @@ async function root_game_install(files) {
 
   // Do not resend the alert in case of updates
   if (!supported_root && !updating_mod) {
-    warning_root_install();
+    api_warning("Root-Install-"+ mod_install_name,
+      mod_install_name +" will be installed in the root directory of the game. If it's normal just ignore this warning",
+    )
   }
 
   // you always need to filter and everything
@@ -384,7 +374,7 @@ async function deserializeLoadOrder(context) {
       if (!loadOrder.find((mod) => mod.id === folder)) {
         loadOrder.push({
           id: folder,
-          modId: undefined,
+          modId: isVortexManaged(folder) ? folder : undefined,
           enabled: true,
         });
       }
@@ -413,7 +403,36 @@ async function serializeLoadOrder(_context, loadOrder) {
   );
 }
 
+async function toolbar(){
+  if(!util.getSafe(state(),['settings', 'interface', 'tools', 'addToolsToTitleBar'], false)){
+    api.sendNotification({
+      id: "Darktide-enable-toolbar",
+      type: "warning",
+      message: "Enable toolbar for easy game patching",
+      actions: [
+        {
+          title: "Enable Toolbar",
+          action: () => {
+            api.store.dispatch({ type: 'SET_ADD_TO_TITLEBAR', payload: { addToTitleBar: true } });
+            api.dismissNotification("Darktide-enable-toolbar")
+            api.sendNotification({
+              id : "enabled toolbar",
+              type : "success",
+              message:"Activated the toolbar. At the top of your screen you now can patch the game",
+              supress : true
+            })
+          }
+        },
+      ],
+    });
+  }
+}
+
+
 function main(context) {
+
+  
+
   context.registerInstaller(
     "warhammer40kdarktide-mod",
     25,
@@ -463,19 +482,27 @@ function main(context) {
   });
 
   // Didn't check if below events trigger on profiles for other games, so make sure it is for this
-  const should_patch = (profileId) =>
-    selectors.profileById(context.api.getState(), profileId)?.gameId ===
-      GAME_ID && GAME_PATH;
+  
 
   context.once(() => {
-    api = context.api;
+    api = context.api;//don't move from the top
+
+    if(is_darktide_profile_active()){
+      toolbar()
+    }
+    context.api.events.on('profile-did-change', ()=>{
+      if(is_darktide_profile_active()){
+        toolbar()
+      }
+    });
+    
     // Patch on deploy
     context.api.onAsync("did-deploy", (profileId) => {
       //log("did-deploy")
       mod_update_all_profile = false;
       updating_mod = false;
       updatemodid = undefined;
-      if (should_patch(profileId)) {
+      if (is_darktide_profile_active()) {
         const proc = child_process.spawn(
           path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
           ["--patch"],
@@ -486,7 +513,7 @@ function main(context) {
 
     // Unpatch on purge
     context.api.events.on("will-purge", (profileId) => {
-      if (should_patch(profileId)) {
+      if (is_darktide_profile_active()) {
         try {
           child_process.spawnSync(
             path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
@@ -504,14 +531,13 @@ function main(context) {
 
     context.api.events.on("remove-mod", (gameMode, modId) => {
       if (modId.includes("-" + updatemodid + "-")) {
-        //log('remove-mod')
         mod_update_all_profile = true;
       }
     });
 
     context.api.events.on("will-install-mod", (gameId, _, modId) => {
+      mod_install_name = modId.split("-")[0];
       if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
-        //log("will-install-mod")
         updating_mod = true;
       } else {
         updating_mod = false;
