@@ -10,8 +10,6 @@ Download [Vortex](https://www.nexusmods.com/about/vortex/).
 2. Go to the games section on the left
 3. Search for darktide and click on manage, it'll install the extension and relaunch Vortex.
 
-**Download the extension directly from Nexus Mods: https://www.nexusmods.com/site/mods/684**
-
 ### Manually
 
 1. Download [Darktide Vortex Extension](https://www.nexusmods.com/site/mods/684)
