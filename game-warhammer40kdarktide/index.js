@@ -517,7 +517,7 @@ function main(context) {
       updatemodid = undefined;
       if (is_darktide_profile_active()) {
         const proc = child_process.spawn(
-          path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
+          path.join(GAME_PATH, "tools", "dtkit-patch.exe"), 
           ["--patch"],
         );
         proc.on("error", () => {});
@@ -548,7 +548,7 @@ function main(context) {
       }
     });
 
-    context.api.events.on("will-install-mod", (_, _, modId) => {
+    context.api.events.on("will-install-mod", (_1, _2, modId) => {
       mod_install_name = modId.split("-")[0];
       if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
         updating_mod = true;
