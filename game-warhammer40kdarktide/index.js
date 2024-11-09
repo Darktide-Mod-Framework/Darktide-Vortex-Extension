@@ -535,7 +535,7 @@ function main(context) {
       }
     });
 
-    context.api.events.on("will-install-mod", (_1, _2, modId) => {
+    context.api.events.on("will-install-mod", (gameId, archiveId, modId) => {
       mod_install_name = modId.split("-")[0];
       if (GAME_ID == gameId && modId.includes("-" + updatemodid + "-")) {
         updating_mod = true;
