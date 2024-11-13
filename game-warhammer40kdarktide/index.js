@@ -509,18 +509,20 @@ function main(context) {
       mod_update_all_profile = false;
       updating_mod = false;
       updatemodid = undefined;
-      if (is_darktide_profile_active()) {
-        const proc = child_process.spawn(
-          path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
-          ["--patch"],
-        );
-        proc.on("error", () => {});
+      if (is_darktide_profile_active() && GAME_PATH != null) {
+        try {
+          const proc = child_process.spawn(
+            path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
+            ["--patch"],
+          );
+          proc.on("error", () => {});
+        } catch (e) {}
       }
     });
 
     // Unpatch on purge
     context.api.events.on("will-purge", (profileId) => {
-      if (is_darktide_profile_active()) {
+      if (is_darktide_profile_active() && GAME_PATH != null) {
         try {
           child_process.spawnSync(
             path.join(GAME_PATH, "tools", "dtkit-patch.exe"),
