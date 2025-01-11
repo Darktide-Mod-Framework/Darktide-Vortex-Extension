@@ -21,7 +21,7 @@ Download [Vortex](https://www.nexusmods.com/about/vortex/).
 
 1. Go to the Games tab and search for "darktide"
 2. Hover the game and click Manage
-3. Two new tabs will appear on the right hand side: "Mods" and "Load Order"
+3. Two new tabs will appear on the left hand side: "Mods" and "Load Order"
 
 ### Mods
 
