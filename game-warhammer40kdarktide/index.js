@@ -18,6 +18,11 @@ let updating_mod = false;
 // used to display the name of the currently installed mod
 let mod_install_name = "";
 
+// for whatever reason, serialize ignores the order of newly-installed mods
+let enforceModOrder = new Map(); // string modId -> int index
+// to prevent having to read files every time the load order deserializes
+let orderRulesCache = new Map(); // string modId -> Object rules or false if no rules
+
 let api = false; // useful where we can't access API
 const state = () => api.getState(); //get the state from anywhere
 const is_darktide_profile_active = () =>
@@ -297,6 +302,77 @@ async function requiresLauncher() {
   }
 }
 
+function getOrderRules(modFolderPath, modId) {
+  let cached = orderRulesCache.get(modId);
+  if (cached !== undefined) {
+    return cached ? cached : undefined;
+  }
+
+  try {
+    let metadataPath = path.join(modFolderPath, modId, `${modId}.json`);
+    let metadataContent = fs.readFileSync(metadataPath, { encoding: "utf8" });
+    let metadataJson = JSON.parse(metadataContent);
+    if (metadataJson.hasOwnProperty("order")) {
+      let orderJson = metadataJson.order;
+      orderRulesCache.set(modId, orderJson);
+      return orderJson;
+    }
+  } catch (e) {}
+
+  orderRulesCache.set(modId, false);
+  return undefined;
+}
+
+function getLowerRulesBound(loadOrder, orderRules) {
+  let lastAfter = undefined;
+  if (orderRules.hasOwnProperty("this_after")) {
+    let afterIdxs = orderRules.this_after.map((a) => loadOrder.findIndex((mod) => mod.id === a));
+    for (let idx of afterIdxs) {
+      if (idx >= 0 && loadOrder[idx].enabled && (lastAfter === undefined || idx > lastAfter)) {
+        lastAfter = idx;
+      }
+    }
+  }
+  return lastAfter;
+}
+
+function getUpperRulesBound(loadOrder, orderRules) {
+  let firstBefore = undefined;
+  if (orderRules.hasOwnProperty("this_before")) {
+    let beforeIdxs = orderRules.this_before.map((b) => loadOrder.findIndex((mod) => mod.id === b));
+    for (let idx of beforeIdxs) {
+      if (idx >= 0 && loadOrder[idx].enabled && (firstBefore === undefined || idx < firstBefore)) {
+        firstBefore = idx;
+      }
+    }
+  }
+  return firstBefore;
+}
+
+function insertModIntoLoadOrder(loadOrder, addMod) {
+  let insertIdx = undefined;
+
+  let rules = addMod.orderRules;
+  if (rules) {
+    let lowerBound = getLowerRulesBound(loadOrder, rules);
+    if (lowerBound !== undefined) {
+      insertIdx = lowerBound + 1;
+    } else {
+      let upperBound = getUpperRulesBound(loadOrder, rules);
+      if (upperBound !== undefined) {
+        insertIdx = upperBound;
+      }
+    }
+  }
+
+  if (insertIdx === undefined) {
+    loadOrder.push(addMod);
+  } else {
+    loadOrder.splice(insertIdx, 0, addMod);
+  }
+  enforceModOrder.set(addMod.id, insertIdx === undefined ? loadOrder.length : insertIdx);
+}
+
 async function deserializeLoadOrder(context) {
   //log("deser")
   // on mod update for all profile it would cause the mod if it was selected to be unselected
@@ -364,6 +440,7 @@ async function deserializeLoadOrder(context) {
         id,
         modId: isVortexManaged(id) ? id : undefined,
         enabled: !line.startsWith("--"),
+        orderRules: getOrderRules(modFolderPath, id),
       };
     })
     // Remove any mods from the mod_load_order that don't have corresponding
@@ -374,10 +451,11 @@ async function deserializeLoadOrder(context) {
   for (let folder of modFolders) {
     if (folder !== "dmf" && folder !== "base") {
       if (!loadOrder.find((mod) => mod.id === folder)) {
-        loadOrder.push({
+        insertModIntoLoadOrder(loadOrder, {
           id: folder,
           modId: isVortexManaged(folder) ? folder : undefined,
           enabled: true,
+          orderRules: getOrderRules(modFolderPath, folder),
         });
       }
     }
@@ -394,6 +472,31 @@ async function serializeLoadOrder(_context, loadOrder) {
   let gameDir = await queryPath();
   let loadOrderPath = path.join(gameDir, "mods", "mod_load_order.txt");
 
+  // Vortex seems to force newly-installed mods into loadOrder[1]
+  // regardless of where they are placed during deserialization.
+  // So, let's force them to go where we want them the first time.
+  if (enforceModOrder.size > 0) {
+    let liftedMods = [];
+    for (let idx = loadOrder.length - 1; idx >= 0; idx--) {
+      let mod = loadOrder[idx];
+      let targetIdx = enforceModOrder.get(mod.id);
+      if (targetIdx !== undefined && targetIdx != idx) {
+          liftedMods.push({
+            mod: mod,
+            idx: targetIdx
+          });
+          loadOrder.splice(idx, 1);
+      }
+    }
+
+    liftedMods.sort((a, b) => a.idx - b.idx);
+    for (let lift of liftedMods) {
+      loadOrder.splice(lift.idx, 0, lift.mod);
+    }
+
+    enforceModOrder.clear();
+  }
+
   let loadOrderOutput = loadOrder
     .map((mod) => (mod.enabled ? mod.id : `-- ${mod.id}`))
     .join("\n");
@@ -403,6 +506,74 @@ async function serializeLoadOrder(_context, loadOrder) {
     `-- File managed by Vortex mod manager\n${loadOrderOutput}`,
     { encoding: "utf8" },
   );
+}
+
+function filterToEnabledModIds(ids, loadOrder) {
+  return ids.filter((a) => {
+    var mod = loadOrder.find((mod) => mod.id === a);
+    return mod !== undefined && mod.enabled;
+  });
+}
+
+async function validate(_previous, loadOrder) {
+  let invalid = [];
+  for (let idx = 0; idx < loadOrder.length; idx++) {
+    let mod = loadOrder[idx];
+    let rules = mod.orderRules;
+    if (mod.enabled && rules) {
+      let modId = mod.id;
+
+      let lowerBound = getLowerRulesBound(loadOrder, rules);
+      let hasLowerBound = lowerBound !== undefined;
+
+      let upperBound = getUpperRulesBound(loadOrder, rules);
+      let hasUpperBound = upperBound !== undefined;
+
+      let errorMessage = undefined;
+      if (hasLowerBound || hasUpperBound) {
+        if (hasLowerBound && hasUpperBound) {
+          if (idx <= lowerBound || idx >= upperBound) {
+            errorMessage = `Should be after ${filterToEnabledModIds(rules.this_after, loadOrder).join(", ")} but before ${filterToEnabledModIds(rules.this_before, loadOrder).join(", ")}.`;
+          }
+        } else if (hasLowerBound) {
+          if (idx <= lowerBound) {
+            errorMessage = `Should be after ${filterToEnabledModIds(rules.this_after, loadOrder).join(", ")}.`;
+          }
+        } else {
+          if (idx >= upperBound) {
+            errorMessage = `Should be before ${filterToEnabledModIds(rules.this_before, loadOrder).join(", ")}.`
+          }
+        }
+      }
+
+      if (rules.hasOwnProperty("require")) {
+        let missing = rules.require.filter((r) => {
+          var requiredMod = loadOrder.find((m) => m.id === r);
+          return requiredMod === undefined || !requiredMod.enabled;
+        });
+        if (missing.length > 0) {
+          let requireMessage = `Requires ${missing.join(", ")}.`;
+          if (errorMessage === undefined) {
+            errorMessage = requireMessage;
+          } else {
+            errorMessage = requireMessage + " " + errorMessage;
+          }
+        }
+      }
+
+      if (errorMessage !== undefined) {
+        invalid.push({
+          id: modId,
+          reason: errorMessage
+        })
+      }
+    }
+  }
+
+  if (invalid.length > 0) {
+    return Promise.resolve({ invalid });
+  }
+  return Promise.resolve();
 }
 
 async function toolbar() {
@@ -482,7 +653,7 @@ function main(context) {
 
   context.registerLoadOrder({
     gameId: GAME_ID,
-    validate: async () => Promise.resolve(undefined), // no validation implemented yet
+    validate: async (previousLoadOrder, loadOrder) => await validate(previousLoadOrder, loadOrder),
     deserializeLoadOrder: async () => await deserializeLoadOrder(context),
     serializeLoadOrder: async (loadOrder) =>
       await serializeLoadOrder(context, loadOrder),
