@@ -35,6 +35,21 @@ In the Load order tab you can control **which are enabled in game** and in **whi
 
 The modding tools come with a patcher which modifies the game to load mods. From the Vortex Dashboard you can run this tool to patch or unpatch the game. This will need to be done after each patch.
 
+## Building
+
+The extension is written in TypeScript and compiled against
+[`@nexusmods/vortex-api`](https://www.npmjs.com/package/@nexusmods/vortex-api).
+
+```sh
+npm install
+npm run build
+```
+
+`npm run build` compiles `game-warhammer40kdarktide/src/**/*.ts` into
+`game-warhammer40kdarktide/dist/` and copies the checked-in `info.json` and
+assets alongside it. Package the **contents of `dist/`** (not the outer folder)
+as the extension zip.
+
 ## FAQs
 
 #### Why aren't mods loading?
