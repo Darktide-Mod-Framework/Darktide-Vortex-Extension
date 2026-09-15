@@ -60,6 +60,7 @@ const tools = [
     logo: "dmf.png",
     executable: () => "tools/dtkit-patch.exe",
     requiredFiles: ["tools/dtkit-patch.exe"],
+    parameters:["--toggle","..\\bundle"],
     relative: true,
     exclusive: true,
   },
@@ -405,41 +406,6 @@ async function serializeLoadOrder(_context, loadOrder) {
   );
 }
 
-async function toolbar() {
-  if (
-    !util.getSafe(
-      state(),
-      ["settings", "interface", "tools", "addToolsToTitleBar"],
-      false,
-    )
-  ) {
-    api.sendNotification({
-      id: "Darktide-enable-toolbar",
-      type: "warning",
-      message: "Enable toolbar for easy game patching",
-      actions: [
-        {
-          title: "Enable Toolbar",
-          action: () => {
-            api.store.dispatch({
-              type: "SET_ADD_TO_TITLEBAR",
-              payload: { addToTitleBar: true },
-            });
-            api.dismissNotification("Darktide-enable-toolbar");
-            api.sendNotification({
-              id: "enabled toolbar",
-              type: "success",
-              message:
-                "Activated the toolbar. At the top of your screen you now can patch the game",
-              supress: true,
-            });
-          },
-        },
-      ],
-    });
-  }
-}
-
 function main(context) {
   context.registerInstaller(
     "warhammer40kdarktide-mod",
@@ -493,15 +459,6 @@ function main(context) {
 
   context.once(() => {
     api = context.api; //don't move from the top
-
-    if (is_darktide_profile_active()) {
-      toolbar();
-    }
-    context.api.events.on("profile-did-change", () => {
-      if (is_darktide_profile_active()) {
-        toolbar();
-      }
-    });
 
     // Patch on deploy
     context.api.onAsync("did-deploy", (profileId) => {
