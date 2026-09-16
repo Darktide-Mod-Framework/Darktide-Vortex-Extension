@@ -227,41 +227,6 @@ async function checkForDML(toggleModsPath: string): Promise<void> {
   });
 }
 
-// --- toolbar ---------------------------------------------------------------
-
-function toolbar(): void {
-  if (api === undefined) {
-    return;
-  }
-
-  const addToTitleBar = util.getSafe(
-    api.getState(),
-    ["settings", "interface", "tools", "addToolsToTitleBar"],
-    false,
-  );
-  if (addToTitleBar) {
-    return;
-  }
-
-  api.sendNotification?.({
-    id: "Darktide-enable-toolbar",
-    type: "warning",
-    message: "Enable toolbar for easy game patching",
-    actions: [
-      {
-        title: "Enable Toolbar",
-        action: () => {
-          api?.store?.dispatch({
-            type: "SET_ADD_TO_TITLEBAR",
-            payload: { addToTitleBar: true },
-          });
-          api?.dismissNotification?.("Darktide-enable-toolbar");
-        },
-      },
-    ],
-  });
-}
-
 // --- main ------------------------------------------------------------------
 
 function main(context: types.IExtensionContext): boolean {
@@ -319,16 +284,6 @@ function main(context: types.IExtensionContext): boolean {
   });
 
   context.once(() => {
-    if (selectors.activeGameId(context.api.getState()) === GAME_ID) {
-      toolbar();
-    }
-
-    context.api.events.on("profile-did-change", () => {
-      if (selectors.activeGameId(context.api.getState()) === GAME_ID) {
-        toolbar();
-      }
-    });
-
     // Patch on deploy.
     context.api.onAsync("did-deploy", async () => {
       modUpdateState.updateInProgress = false;

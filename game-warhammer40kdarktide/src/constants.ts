@@ -17,6 +17,7 @@ export const TOOLS: types.ITool[] = [
     logo: "dmf.png",
     executable: () => "tools/dtkit-patch.exe",
     requiredFiles: ["tools/dtkit-patch.exe"],
+    parameters: ["--toggle", "..\\bundle"],
     relative: true,
     exclusive: true,
   },
