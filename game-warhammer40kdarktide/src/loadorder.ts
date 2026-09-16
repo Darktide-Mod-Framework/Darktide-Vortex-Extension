@@ -23,6 +23,11 @@ type LoadOrder = types.ILoadOrderEntry<LoadOrderEntryData>[];
 // don't re-read unchanged metadata on every deserialization.
 const orderRulesCache = new Map<string, { mtimeMs?: number; rules?: OrderRules }>();
 
+// Vortex forces newly-installed mods into loadOrder[1] regardless of where
+// they were placed during deserialization. Remember the index they *should* be
+// at so serializeLoadOrder can put them back the first time.
+const enforceModOrder = new Map<string, number>(); // string modId -> int index
+
 // --- helpers ---------------------------------------------------------------
 
 function toArray(value: unknown): string[] | undefined {
@@ -135,6 +140,8 @@ function insertModIntoLoadOrder(loadOrder: LoadOrder, addMod: LoadOrder[number])
   } else {
     loadOrder.splice(insertIdx, 0, addMod);
   }
+
+  enforceModOrder.set(addMod.id, insertIdx === undefined ? loadOrder.length - 1 : insertIdx);
 }
 
 function enabledDeps(loadOrder: LoadOrder, deps: string[] | undefined): string {
@@ -169,6 +176,7 @@ async function listModFolders(modFolderPath: string): Promise<string[]> {
     .sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 }
 
+/** True when the mod folder has markers indicating it is managed by Vortex. */
 async function isVortexManaged(modFolderPath: string, modId: string): Promise<boolean> {
   try {
     await fs.statAsync(path.join(modFolderPath, modId, "__folder_managed_by_vortex"));
@@ -186,18 +194,6 @@ async function isVortexManaged(modFolderPath: string, modId: string): Promise<bo
 // --- public API ------------------------------------------------------------
 
 export async function deserializeLoadOrder(api: types.IExtensionApi): Promise<LoadOrder> {
-  // During an "update all profiles" cycle Vortex would otherwise drop the
-  // updated mod from the load order, so hand back a placeholder instead.
-  if (modUpdateState.updateAllProfiles) {
-    return [
-      {
-        id: "mod update in progress, please wait. Refresh when finished. \n To avoid this wait, only update current profile",
-        name: "Mod update in progress",
-        enabled: false,
-      },
-    ];
-  }
-
   const state = api.getState();
   const discovery = selectors.discoveryByGame(state, GAME_ID);
   if (discovery?.path === undefined) {
@@ -216,7 +212,14 @@ export async function deserializeLoadOrder(api: types.IExtensionApi): Promise<Lo
   const loadOrder: LoadOrder = [];
   for (const line of loadOrderFile.split("\n")) {
     const id = line.replace(/-- /g, "").trim();
-    if (id === "" || !modFolders.includes(id)) {
+    if (id === "") {
+      continue;
+    }
+
+    // Keep entries whose folder is missing while an update is in progress: the
+    // folder is only temporarily absent during an update, and dropping the
+    // entry here would move the mod to the bottom of the order.
+    if (!modFolders.includes(id) && !modUpdateState.updateInProgress) {
       continue;
     }
 
@@ -250,10 +253,6 @@ export async function serializeLoadOrder(
   api: types.IExtensionApi,
   loadOrder: LoadOrder,
 ): Promise<void> {
-  if (modUpdateState.updateAllProfiles) {
-    return;
-  }
-
   const state = api.getState();
   const discovery = selectors.discoveryByGame(state, GAME_ID);
   if (discovery?.path === undefined) {
@@ -261,6 +260,29 @@ export async function serializeLoadOrder(
   }
 
   const loadOrderPath = path.join(discovery.path, "mods", "mod_load_order.txt");
+
+  // Vortex forces newly-installed mods into index 1 regardless of where they
+  // were placed during deserialization, so move them back to the index we
+  // recorded for them the first time around.
+  if (enforceModOrder.size > 0) {
+    const lifted: Array<{ mod: LoadOrder[number]; idx: number }> = [];
+    for (let idx = loadOrder.length - 1; idx >= 0; idx--) {
+      const mod = loadOrder[idx];
+      const targetIdx = enforceModOrder.get(mod.id);
+      if (targetIdx !== undefined && targetIdx !== idx) {
+        lifted.push({ mod, idx: targetIdx });
+        loadOrder.splice(idx, 1);
+      }
+    }
+
+    lifted.sort((a, b) => a.idx - b.idx);
+    for (const lift of lifted) {
+      loadOrder.splice(lift.idx, 0, lift.mod);
+    }
+
+    enforceModOrder.clear();
+  }
+
   const output = loadOrder.map((mod) => (mod.enabled ? mod.id : `-- ${mod.id}`)).join("\n");
 
   try {

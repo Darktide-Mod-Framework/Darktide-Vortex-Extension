@@ -37,7 +37,7 @@ function testSupportedContent(files: string[], gameId: string): Promise<types.IS
     );
 
   // Don't resend the alert in case of updates.
-  if (gameId === GAME_ID && !supported && !modUpdateState.updatingMod) {
+  if (gameId === GAME_ID && !supported && !modUpdateState.updateInProgress) {
     sendWarning(
       `Unsupported-Root-Install-${modUpdateState.modInstallName}`,
       `${modUpdateState.modInstallName} could not pass our support test, it'll be installed in the root directory`,
@@ -97,7 +97,7 @@ function rootGameInstall(files: string[]): types.IInstallResult {
   );
 
   // Don't resend the alert in case of updates.
-  if (supportedRoot === undefined && !modUpdateState.updatingMod) {
+  if (supportedRoot === undefined && !modUpdateState.updateInProgress) {
     sendWarning(
       `Root-Install-${modUpdateState.modInstallName}`,
       `${modUpdateState.modInstallName} will be installed in the root directory of the game. If it's normal just ignore this warning`,
@@ -331,9 +331,7 @@ function main(context: types.IExtensionContext): boolean {
 
     // Patch on deploy.
     context.api.onAsync("did-deploy", async () => {
-      modUpdateState.updateAllProfiles = false;
-      modUpdateState.updatingMod = false;
-      modUpdateState.updateModId = undefined;
+      modUpdateState.updateInProgress = false;
 
       const discovery = selectors.discoveryByGame(context.api.getState(), GAME_ID);
       if (discovery?.path === undefined) {
@@ -362,33 +360,25 @@ function main(context: types.IExtensionContext): boolean {
       }
     });
 
-    context.api.events.on("mod-update", (gameId: string, modId: string) => {
-      if (gameId === GAME_ID) {
-        modUpdateState.updateModId = modId;
-      }
-    });
-
-    context.api.events.on("remove-mod", (_gameMode: string, modId: string) => {
-      if (
-        modUpdateState.updateModId !== undefined &&
-        modId.includes(`-${modUpdateState.updateModId}-`)
-      ) {
-        modUpdateState.updateAllProfiles = true;
-      }
-    });
-
     context.api.events.on(
       "will-install-mod",
-      (gameId: string, _archiveId: string, modId: string) => {
+      (_gameId: string, _archiveId: string, modId: string) => {
         modUpdateState.modInstallName = modId.split("-")[0];
-        if (
-          gameId === GAME_ID &&
-          modUpdateState.updateModId !== undefined &&
-          modId.includes(`-${modUpdateState.updateModId}-`)
-        ) {
-          modUpdateState.updatingMod = true;
-        } else {
-          modUpdateState.updatingMod = false;
+      },
+    );
+
+    // An update removes the old mod version before installing the new one.
+    // Detect that removal (willBeReplaced) so the load order keeps the mod's
+    // entry while its folder is temporarily absent.
+    context.api.onAsync(
+      "will-remove-mod",
+      async (
+        gameId: string,
+        _modId: string,
+        removeOpts: { willBeReplaced?: boolean },
+      ) => {
+        if (gameId === GAME_ID && removeOpts?.willBeReplaced === true) {
+          modUpdateState.updateInProgress = true;
         }
       },
     );
