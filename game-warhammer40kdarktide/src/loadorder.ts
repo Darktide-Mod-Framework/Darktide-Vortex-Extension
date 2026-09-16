@@ -101,28 +101,59 @@ async function getOrderRules(
 }
 
 /**
- * Maps a load order id (the mod folder name) to the real installed Vortex mod
- * id. Vortex matches replacement entries by this id, so using the folder name
- * (or `undefined`) would prevent the entry from being associated with its
- * replacement.
+ * Records `deployed folder -> real Vortex mod id` from a deployment manifest.
+ *
+ * A mod's `installationPath` is its staging folder (e.g.
+ * `True Level-156-1-6-3-1719534708`), not the folder it is deployed into
+ * (`true_level`), so the manifest's `source` is the reliable link between the
+ * two. `relPath` is the deployed file path, so the `.mod` file's parent
+ * directory is the load order id.
  */
-function installedModIdByFolder(api: types.IExtensionApi): Map<string, string> {
-  const mods = api.getState().persistent?.mods?.[GAME_ID] ?? {};
-  const result = new Map<string, string>();
-
-  for (const [modId, mod] of Object.entries(mods)) {
-    const installationPath = mod?.installationPath ?? "";
-    const trimmed = installationPath.replace(/[\\/]+$/, "");
-    if (trimmed === "") {
+export function rememberDeploymentManifest(
+  deployment: types.IDeploymentManifest | undefined,
+): void {
+  for (const file of deployment?.files ?? []) {
+    if (!file.relPath.toLowerCase().endsWith(".mod")) {
       continue;
     }
-    const folder = trimmed.split(/[\\/]/).pop();
+    const segments = file.relPath.replace(/[\\/]+$/, "").split(/[\\/]/);
+    const folder = segments[segments.length - 2];
     if (folder !== undefined && folder !== "") {
-      result.set(folder.toLowerCase(), modId);
+      modUpdateState.deployedModIds.set(folder.toLowerCase(), file.source);
     }
   }
+}
 
-  return result;
+/** True when the mod folder has markers indicating it is managed by Vortex. */
+async function isVortexManaged(modFolderPath: string, folder: string): Promise<boolean> {
+  try {
+    await fs.statAsync(path.join(modFolderPath, folder, "__folder_managed_by_vortex"));
+    return true;
+  } catch {
+    try {
+      await fs.statAsync(path.join(modFolderPath, folder, `${folder}.mod.vortex_backup`));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+}
+
+/**
+ * The real installed Vortex mod id for a deployed folder, so Vortex can match
+ * the entry with its replacement. Falls back to the folder name (a truthy id
+ * keeps Vortex from labelling the mod as unmanaged) when the deployment
+ * manifest doesn't know about it yet.
+ */
+async function resolveModId(
+  modFolderPath: string,
+  folder: string,
+): Promise<string | undefined> {
+  const fromManifest = modUpdateState.deployedModIds.get(folder.toLowerCase());
+  if (fromManifest !== undefined) {
+    return fromManifest;
+  }
+  return (await isVortexManaged(modFolderPath, folder)) ? folder : undefined;
 }
 
 /** Strips the disabled marker (`-- `) from a load order line and trims it. */
@@ -316,54 +347,17 @@ async function listModFolders(modFolderPath: string): Promise<string[]> {
 // --- public API ------------------------------------------------------------
 
 /**
- * Snapshot the load order entries affected by an in-flight update so they keep
- * their position and enabled state while their folders are temporarily absent.
- *
- * Must be called on the pre-undeployment `will-remove-mods` event (and is
- * idempotent when the later singular `will-remove-mod` repeats the same mods).
+ * Mark an update as in progress. Called on the pre-undeployment
+ * `will-remove-mods` event (and idempotently on the later singular
+ * `will-remove-mod`). While the flag is set, folders that are temporarily
+ * absent are kept in the load order instead of dropped, which preserves the
+ * updated mod's position and enabled state through intermediate reads.
  */
-export async function captureEntriesForUpdate(
-  api: types.IExtensionApi,
-  modIds: string[],
-): Promise<void> {
-  const state = api.getState();
-  const discovery = selectors.discoveryByGame(state, GAME_ID);
-  if (discovery?.path === undefined) {
-    return;
-  }
-
-  const modFolderPath = path.join(discovery.path, "mods");
-  const loadOrderPath = path.join(modFolderPath, "mod_load_order.txt");
-  const loadOrderFile = await fs
-    .readFileAsync(loadOrderPath, { encoding: "utf8" })
-    .catch(() => "");
-
-  const modIdByFolder = installedModIdByFolder(api);
-  const affected = new Set(modIds);
-
-  for (const line of loadOrderFile.split("\n")) {
-    const id = parseEntryId(line);
-    if (id === undefined || id === MANAGED_HEADER) {
-      continue;
-    }
-
-    const modId = modIdByFolder.get(id.toLowerCase());
-    if (modId === undefined || !affected.has(modId)) {
-      continue;
-    }
-
-    if (!modUpdateState.preservedEntries.has(id)) {
-      modUpdateState.preservedEntries.set(id, {
-        enabled: !line.startsWith("--"),
-        modId,
-      });
-    }
-  }
-
+export function beginUpdate(api: types.IExtensionApi): void {
   modUpdateState.updateInProgress = true;
   modUpdateState.profileId =
     modUpdateState.profileId ??
-    selectors.lastActiveProfileForGame(state, GAME_ID);
+    selectors.lastActiveProfileForGame(api.getState(), GAME_ID);
 }
 
 export async function deserializeLoadOrder(
@@ -383,7 +377,6 @@ export async function deserializeLoadOrder(
     .catch(() => "");
 
   const modFolders = await listModFolders(modFolderPath);
-  const modIdByFolder = installedModIdByFolder(api);
 
   const loadOrder: LoadOrder = [];
   for (const line of loadOrderFile.split("\n")) {
@@ -392,35 +385,16 @@ export async function deserializeLoadOrder(
       continue;
     }
 
-    const folderPresent = modFolders.includes(id);
-    const preserved = modUpdateState.preservedEntries.get(id);
-
-    if (!folderPresent) {
-      // Keep entries whose folder is only temporarily absent because it is
-      // being replaced. Anything else is no longer installed on disk.
-      if (preserved === undefined) {
-        continue;
-      }
-
-      loadOrder.push({
-        id,
-        name: id,
-        modId: modIdByFolder.get(id.toLowerCase()) ?? preserved.modId,
-        enabled: preserved.enabled,
-        data: { orderRules: await getOrderRules(modFolderPath, id) },
-      });
+    // Keep entries whose folder is only temporarily absent because it is being
+    // replaced. Without an update in flight the mod is really uninstalled.
+    if (!modFolders.includes(id) && !modUpdateState.updateInProgress) {
       continue;
-    }
-
-    if (preserved !== undefined) {
-      // The replacement is on disk again; the preserved snapshot is obsolete.
-      modUpdateState.preservedEntries.delete(id);
     }
 
     loadOrder.push({
       id,
       name: id,
-      modId: modIdByFolder.get(id.toLowerCase()),
+      modId: await resolveModId(modFolderPath, id),
       enabled: !line.startsWith("--"),
       data: { orderRules: await getOrderRules(modFolderPath, id) },
     });
@@ -434,16 +408,11 @@ export async function deserializeLoadOrder(
       continue;
     }
 
-    const preserved = modUpdateState.preservedEntries.get(folder);
-    if (preserved !== undefined) {
-      modUpdateState.preservedEntries.delete(folder);
-    }
-
     pending.push({
       id: folder,
       name: folder,
-      modId: modIdByFolder.get(folder.toLowerCase()) ?? preserved?.modId,
-      enabled: preserved?.enabled ?? true,
+      modId: await resolveModId(modFolderPath, folder),
+      enabled: true,
       data: { orderRules: await getOrderRules(modFolderPath, folder) },
     });
   }

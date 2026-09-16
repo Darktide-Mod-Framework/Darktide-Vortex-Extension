@@ -10,7 +10,7 @@ vi.mock("child_process", () => ({
 import { spawn, spawnSync } from "child_process";
 
 import main from "../index";
-import { captureEntriesForUpdate, deserializeLoadOrder } from "../loadorder";
+import { beginUpdate, deserializeLoadOrder } from "../loadorder";
 import { clearUpdateState, modUpdateState } from "../state";
 import {
   addModFolder,
@@ -40,11 +40,9 @@ function createContext() {
       getState: () => vortexState,
       sendNotification: vi.fn(),
       showErrorNotification: vi.fn(),
-      onAsync: (name: string, handler: Handler) =>
-        asyncHandlers.set(name, handler),
+      onAsync: (name: string, handler: Handler) => asyncHandlers.set(name, handler),
       events: {
-        on: (name: string, handler: Handler) =>
-          eventHandlers.set(name, handler),
+        on: (name: string, handler: Handler) => eventHandlers.set(name, handler),
       },
     },
     registerInstaller: vi.fn(),
@@ -55,17 +53,17 @@ function createContext() {
     },
   };
 
-  return {
-    context,
-    asyncHandlers,
-    eventHandlers,
-    runOnce: () => once?.(),
-  };
+  return { context, asyncHandlers, eventHandlers, runOnce: () => once?.() };
+}
+
+function setOrder(lines: string[]): void {
+  writeFile(ORDER_PATH, lines.join("\n"));
 }
 
 beforeEach(() => {
   resetAll();
   clearUpdateState();
+  modUpdateState.deployedModIds.clear();
   setGamePath(GAME_PATH);
   vi.clearAllMocks();
 });
@@ -73,10 +71,7 @@ beforeEach(() => {
 describe("deployment event scoping", () => {
   it("ignores did-deploy for another game", async () => {
     vortexState.profiles["p-skyrim"] = { id: "p-skyrim", gameId: "skyrim" };
-    installMods("true_level");
-    addModFolder("true_level");
-    writeFile(ORDER_PATH, [HEADER_LINE, "true_level"].join("\n"));
-    await captureEntriesForUpdate(api, ["true_level-id"]);
+    beginUpdate(api);
 
     const { context, asyncHandlers, runOnce } = createContext();
     main(context as any);
@@ -84,26 +79,28 @@ describe("deployment event scoping", () => {
 
     await asyncHandlers.get("did-deploy")?.("p-skyrim");
 
-    expect(modUpdateState.preservedEntries.size).toBe(1);
     expect(modUpdateState.updateInProgress).toBe(true);
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("clears preservation and patches on Darktide's own did-deploy", async () => {
+  it("clears preservation, caches the manifest and patches on Darktide's did-deploy", async () => {
     vortexState.profiles["p-dt"] = { id: "p-dt", gameId: GAME_ID };
-    installMods("true_level");
-    addModFolder("true_level");
-    writeFile(ORDER_PATH, [HEADER_LINE, "true_level"].join("\n"));
-    await captureEntriesForUpdate(api, ["true_level-id"]);
+    beginUpdate(api);
 
     const { context, asyncHandlers, runOnce } = createContext();
     main(context as any);
     runOnce();
 
-    await asyncHandlers.get("did-deploy")?.("p-dt");
+    await asyncHandlers.get("did-deploy")?.("p-dt", {
+      files: [
+        { relPath: "mods\\true_level\\true_level.mod", source: "True Level-156-1-6-3-1719534708" },
+      ],
+    });
 
-    expect(modUpdateState.preservedEntries.size).toBe(0);
     expect(modUpdateState.updateInProgress).toBe(false);
+    expect(modUpdateState.deployedModIds.get("true_level")).toBe(
+      "True Level-156-1-6-3-1719534708",
+    );
     expect(spawn).toHaveBeenCalled();
   });
 
@@ -129,13 +126,13 @@ describe("update preservation events", () => {
     addModFolder("a");
     addModFolder("true_level");
     addModFolder("b");
-    writeFile(ORDER_PATH, [HEADER_LINE, "a", "true_level", "b"].join("\n"));
+    setOrder([HEADER_LINE, "a", "true_level", "b"]);
 
     const { context, asyncHandlers, runOnce } = createContext();
     main(context as any);
     runOnce();
 
-    await asyncHandlers.get("will-remove-mods")?.(GAME_ID, ["true_level-id"], {
+    await asyncHandlers.get("will-remove-mods")?.(GAME_ID, ["True Level-156"], {
       willBeReplaced: true,
     });
     removeModFolder("true_level");
@@ -144,45 +141,29 @@ describe("update preservation events", () => {
     expect(loadOrder.map((mod) => mod.id)).toEqual(["a", "true_level", "b"]);
   });
 
-  it("handles the later singular will-remove-mod idempotently", async () => {
-    installMods("a", "true_level", "b");
-    addModFolder("a");
-    addModFolder("true_level");
-    addModFolder("b");
-    writeFile(ORDER_PATH, [HEADER_LINE, "a", "true_level", "b"].join("\n"));
-
+  it("keeps the guard active across the later singular will-remove-mod", async () => {
     const { context, asyncHandlers, runOnce } = createContext();
     main(context as any);
     runOnce();
 
-    await asyncHandlers.get("will-remove-mods")?.(GAME_ID, ["true_level-id"], {
+    await asyncHandlers.get("will-remove-mods")?.(GAME_ID, ["True Level-156"], {
       willBeReplaced: true,
     });
-    const snapshot = modUpdateState.preservedEntries.get("true_level");
-
-    await asyncHandlers.get("will-remove-mod")?.(GAME_ID, "true_level-id", {
+    await asyncHandlers.get("will-remove-mod")?.(GAME_ID, "True Level-156", {
       willBeReplaced: true,
     });
 
-    expect(modUpdateState.preservedEntries.size).toBe(1);
-    expect(modUpdateState.preservedEntries.get("true_level")).toEqual(snapshot);
+    expect(modUpdateState.updateInProgress).toBe(true);
   });
 
   it("ignores removals for other games and plain removals", async () => {
-    installMods("a");
-    addModFolder("a");
-    writeFile(ORDER_PATH, [HEADER_LINE, "a"].join("\n"));
-
     const { context, asyncHandlers, runOnce } = createContext();
     main(context as any);
     runOnce();
 
-    await asyncHandlers.get("will-remove-mods")?.("skyrim", ["a-id"], {
-      willBeReplaced: true,
-    });
+    await asyncHandlers.get("will-remove-mods")?.("skyrim", ["a-id"], { willBeReplaced: true });
     await asyncHandlers.get("will-remove-mods")?.(GAME_ID, ["a-id"], {});
 
-    expect(modUpdateState.preservedEntries.size).toBe(0);
     expect(modUpdateState.updateInProgress).toBe(false);
   });
 });

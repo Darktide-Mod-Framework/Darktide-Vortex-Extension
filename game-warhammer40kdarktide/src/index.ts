@@ -6,8 +6,9 @@ import { fs, selectors, types, util } from "@nexusmods/vortex-api";
 import { GAME_ID, MS_APPID, STEAMAPP_ID, TOOLS } from "./constants";
 import { clearUpdateState, modUpdateState } from "./state";
 import {
-  captureEntriesForUpdate,
+  beginUpdate,
   deserializeLoadOrder,
+  rememberDeploymentManifest,
   serializeLoadOrder,
   validate,
 } from "./loadorder";
@@ -294,10 +295,14 @@ function main(context: types.IExtensionContext): boolean {
     // Darktide update that is still in flight.
     context.api.onAsync(
       "did-deploy",
-      async (profileId: string, _deployment?: types.IDeploymentManifest) => {
+      async (profileId: string, deployment?: types.IDeploymentManifest) => {
         if (!isDarktideProfile(context.api, profileId)) {
           return;
         }
+
+        // Refresh the folder -> mod id map so the load order can point each
+        // entry at the installed mod Vortex knows about.
+        rememberDeploymentManifest(deployment);
 
         // The replacement has been deployed; preservation is no longer needed.
         clearUpdateState();
@@ -314,6 +319,18 @@ function main(context: types.IExtensionContext): boolean {
         } catch {
           // ignore
         }
+      },
+    );
+
+    // `will-deploy` carries the manifest being applied, so record the mapping
+    // as early as possible.
+    context.api.onAsync(
+      "will-deploy",
+      async (profileId: string, deployment?: types.IDeploymentManifest) => {
+        if (!isDarktideProfile(context.api, profileId)) {
+          return;
+        }
+        rememberDeploymentManifest(deployment);
       },
     );
 
@@ -350,13 +367,13 @@ function main(context: types.IExtensionContext): boolean {
     // (idempotently) keeps the guard active across the whole window.
     const onWillRemove = async (
       gameId: string,
-      modIds: string[],
+      _modIds: string[],
       removeOpts?: types.IRemoveModOptions,
     ) => {
       if (gameId !== GAME_ID || removeOpts?.willBeReplaced !== true) {
         return;
       }
-      await captureEntriesForUpdate(context.api, modIds);
+      beginUpdate(context.api);
     };
 
     context.api.onAsync("will-remove-mods", onWillRemove);
