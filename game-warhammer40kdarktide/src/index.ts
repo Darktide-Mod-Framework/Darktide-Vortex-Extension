@@ -4,8 +4,13 @@ import { spawn, spawnSync } from "child_process";
 import { fs, selectors, types, util } from "@nexusmods/vortex-api";
 
 import { GAME_ID, MS_APPID, STEAMAPP_ID, TOOLS } from "./constants";
-import { modUpdateState } from "./state";
-import { deserializeLoadOrder, serializeLoadOrder, validate } from "./loadorder";
+import { clearUpdateState, modUpdateState } from "./state";
+import {
+  captureEntriesForUpdate,
+  deserializeLoadOrder,
+  serializeLoadOrder,
+  validate,
+} from "./loadorder";
 
 const MOD_FILE_EXT = ".mod";
 const BAT_FILE_EXT = ".bat";
@@ -284,26 +289,42 @@ function main(context: types.IExtensionContext): boolean {
   });
 
   context.once(() => {
-    // Patch on deploy.
-    context.api.onAsync("did-deploy", async () => {
-      modUpdateState.updateInProgress = false;
+    // Patch on deploy. `did-deploy` is global, so only react to Darktide's own
+    // profiles - deploying another game must not patch Darktide or discard a
+    // Darktide update that is still in flight.
+    context.api.onAsync(
+      "did-deploy",
+      async (profileId: string, _deployment?: types.IDeploymentManifest) => {
+        if (!isDarktideProfile(context.api, profileId)) {
+          return;
+        }
 
-      const discovery = selectors.discoveryByGame(context.api.getState(), GAME_ID);
-      if (discovery?.path === undefined) {
+        // The replacement has been deployed; preservation is no longer needed.
+        clearUpdateState();
+
+        const discovery = selectors.discoveryByGame(context.api.getState(), GAME_ID);
+        if (discovery?.path === undefined) {
+          return;
+        }
+        try {
+          spawn(path.join(discovery.path, "tools", "dtkit-patch.exe"), ["--patch"]).on(
+            "error",
+            () => undefined,
+          );
+        } catch {
+          // ignore
+        }
+      },
+    );
+
+    // Unpatch on purge. `will-purge` is global too, so scope it to Darktide.
+    context.api.events.on("will-purge", (profileId: string) => {
+      if (!isDarktideProfile(context.api, profileId)) {
         return;
       }
-      try {
-        spawn(path.join(discovery.path, "tools", "dtkit-patch.exe"), ["--patch"]).on(
-          "error",
-          () => undefined,
-        );
-      } catch {
-        // ignore
-      }
-    });
 
-    // Unpatch on purge.
-    context.api.events.on("will-purge", () => {
+      clearUpdateState();
+
       const discovery = selectors.discoveryByGame(context.api.getState(), GAME_ID);
       if (discovery?.path === undefined) {
         return;
@@ -323,25 +344,38 @@ function main(context: types.IExtensionContext): boolean {
     );
 
     // An update removes the old mod version before installing the new one.
-    // Detect that removal (willBeReplaced) so the load order keeps the mod's
-    // entry while its folder is temporarily absent.
+    // `will-remove-mods` fires *before* the old files are undeployed, which is
+    // the only point at which the affected entries can still be captured; the
+    // later singular `will-remove-mod` repeats the same mods, so handling both
+    // (idempotently) keeps the guard active across the whole window.
+    const onWillRemove = async (
+      gameId: string,
+      modIds: string[],
+      removeOpts?: types.IRemoveModOptions,
+    ) => {
+      if (gameId !== GAME_ID || removeOpts?.willBeReplaced !== true) {
+        return;
+      }
+      await captureEntriesForUpdate(context.api, modIds);
+    };
+
+    context.api.onAsync("will-remove-mods", onWillRemove);
     context.api.onAsync(
       "will-remove-mod",
-      async (
-        gameId: string,
-        _modId: string,
-        removeOpts: { willBeReplaced?: boolean },
-      ) => {
-        if (gameId === GAME_ID && removeOpts?.willBeReplaced === true) {
-          modUpdateState.updateInProgress = true;
-        }
-      },
+      (gameId: string, modId: string, removeOpts?: types.IRemoveModOptions) =>
+        onWillRemove(gameId, [modId], removeOpts),
     );
   });
 
   return true;
 }
 
-module.exports = {
-  default: main,
-};
+/** True when the profile belongs to Darktide (deployment events are global). */
+export function isDarktideProfile(api: types.IExtensionApi, profileId?: string): boolean {
+  if (profileId === undefined) {
+    return false;
+  }
+  return selectors.profileById(api.getState(), profileId)?.gameId === GAME_ID;
+}
+
+export default main;

@@ -18,5 +18,6 @@
     "outDir": "game-warhammer40kdarktide/dist",
     "types": ["node"]
   },
-  "include": ["game-warhammer40kdarktide/src/**/*.ts"]
+  "include": ["game-warhammer40kdarktide/src/**/*.ts"],
+  "exclude": ["game-warhammer40kdarktide/src/__tests__/**"]
 }

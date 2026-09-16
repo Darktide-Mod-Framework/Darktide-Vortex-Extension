@@ -5,13 +5,16 @@
   "description": "Support for Warhammer 40,000: Darktide",
   "type": "commonjs",
   "scripts": {
+    "prebuild": "node -e \"require('node:fs').rmSync('game-warhammer40kdarktide/dist',{recursive:true,force:true})\"",
     "build": "tsc -p tsconfig.json && node build.mjs",
+    "test": "vitest run",
     "format": "prettier --write ."
   },
   "devDependencies": {
     "@nexusmods/vortex-api": "^2.6.3",
     "@types/node": "^20.11.0",
     "prettier": "^3.3.3",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^4.1.9"
   }
 }

@@ -50,6 +50,15 @@ npm run build
 assets alongside it. Package the **contents of `dist/`** (not the outer folder)
 as the extension zip.
 
+`dist/` is cleared before compilation, so renamed or deleted source files can't
+leave stale output in the package.
+
+To run the regression tests:
+
+```sh
+npm test
+```
+
 ## FAQs
 
 #### Why aren't mods loading?
