@@ -40,9 +40,11 @@ function createContext() {
       getState: () => vortexState,
       sendNotification: vi.fn(),
       showErrorNotification: vi.fn(),
-      onAsync: (name: string, handler: Handler) => asyncHandlers.set(name, handler),
+      onAsync: (name: string, handler: Handler) =>
+        asyncHandlers.set(name, handler),
       events: {
-        on: (name: string, handler: Handler) => eventHandlers.set(name, handler),
+        on: (name: string, handler: Handler) =>
+          eventHandlers.set(name, handler),
       },
     },
     registerInstaller: vi.fn(),
@@ -64,6 +66,8 @@ beforeEach(() => {
   resetAll();
   clearUpdateState();
   modUpdateState.deployedModIds.clear();
+  modUpdateState.manifestPath = undefined;
+  modUpdateState.manifestLoad = undefined;
   setGamePath(GAME_PATH);
   vi.clearAllMocks();
 });
@@ -77,13 +81,20 @@ describe("deployment event scoping", () => {
     main(context as any);
     runOnce();
 
-    await asyncHandlers.get("did-deploy")?.("p-skyrim");
+    modUpdateState.deployedModIds.set("true_level", "darktide-source");
+    await asyncHandlers.get("did-deploy")?.("p-skyrim", {
+      "": [{ relPath: "mods/true_level/true_level.mod", source: "other-game" }],
+    });
+
+    expect(modUpdateState.deployedModIds.get("true_level")).toBe(
+      "darktide-source",
+    );
 
     expect(modUpdateState.updateInProgress).toBe(true);
     expect(spawn).not.toHaveBeenCalled();
   });
 
-  it("clears preservation, caches the manifest and patches on Darktide's did-deploy", async () => {
+  it("clears preservation, caches deployment files and patches on Darktide's did-deploy", async () => {
     vortexState.profiles["p-dt"] = { id: "p-dt", gameId: GAME_ID };
     beginUpdate(api);
 
@@ -92,8 +103,11 @@ describe("deployment event scoping", () => {
     runOnce();
 
     await asyncHandlers.get("did-deploy")?.("p-dt", {
-      files: [
-        { relPath: "mods\\true_level\\true_level.mod", source: "True Level-156-1-6-3-1719534708" },
+      "": [
+        {
+          relPath: "mods\\true_level\\true_level.mod",
+          source: "True Level-156-1-6-3-1719534708",
+        },
       ],
     });
 
@@ -102,6 +116,60 @@ describe("deployment event scoping", () => {
       "True Level-156-1-6-3-1719534708",
     );
     expect(spawn).toHaveBeenCalled();
+  });
+
+  it("refreshes mappings across will-deploy and did-deploy using all mod types", async () => {
+    vortexState.profiles["p-dt"] = { id: "p-dt", gameId: GAME_ID };
+    addModFolder("true_level");
+    setOrder([HEADER_LINE, "true_level"]);
+    const { context, asyncHandlers, runOnce } = createContext();
+    main(context as any);
+    runOnce();
+
+    await asyncHandlers.get("will-deploy")?.("p-dt", {
+      "": [
+        { relPath: "mods/true_level/true_level.mod", source: "old-version" },
+      ],
+      extra: [
+        { relPath: "mods/removed/removed.mod", source: "removed-version" },
+      ],
+    });
+    expect((await deserializeLoadOrder(api))[0].modId).toBe("old-version");
+    expect(modUpdateState.deployedModIds.get("removed")).toBe(
+      "removed-version",
+    );
+
+    await asyncHandlers.get("did-deploy")?.("p-dt", {
+      "": [
+        { relPath: "mods/true_level/true_level.mod", source: "new-version" },
+      ],
+      extra: [
+        { relPath: "mods/other/other.mod", source: "other-version" },
+        { relPath: "mods/ignored/info.json", source: "metadata-only" },
+      ],
+    });
+
+    expect((await deserializeLoadOrder(api))[0].modId).toBe("new-version");
+    expect([...modUpdateState.deployedModIds]).toEqual([
+      ["true_level", "new-version"],
+      ["other", "other-version"],
+    ]);
+
+    await asyncHandlers.get("did-deploy")?.("p-dt", {});
+    expect(modUpdateState.deployedModIds.size).toBe(0);
+  });
+
+  it("ignores will-deploy for another game", async () => {
+    vortexState.profiles["p-skyrim"] = { id: "p-skyrim", gameId: "skyrim" };
+    modUpdateState.deployedModIds.set("true_level", "darktide-source");
+    const { context, asyncHandlers, runOnce } = createContext();
+    main(context as any);
+    runOnce();
+
+    await asyncHandlers.get("will-deploy")?.("p-skyrim", {});
+    expect(modUpdateState.deployedModIds.get("true_level")).toBe(
+      "darktide-source",
+    );
   });
 
   it("only unpatches for Darktide's own purge", async () => {
@@ -161,9 +229,24 @@ describe("update preservation events", () => {
     main(context as any);
     runOnce();
 
-    await asyncHandlers.get("will-remove-mods")?.("skyrim", ["a-id"], { willBeReplaced: true });
+    await asyncHandlers.get("will-remove-mods")?.("skyrim", ["a-id"], {
+      willBeReplaced: true,
+    });
     await asyncHandlers.get("will-remove-mods")?.(GAME_ID, ["a-id"], {});
 
     expect(modUpdateState.updateInProgress).toBe(false);
+  });
+});
+
+describe("installation event contract", () => {
+  it("accepts Vortex's full will-install-mod arguments and ignores other games", () => {
+    const { context, eventHandlers, runOnce } = createContext();
+    main(context as any);
+    runOnce();
+    const handler = eventHandlers.get("will-install-mod")!;
+    handler(GAME_ID, "archive-id", "True Level-156", { download: {} });
+    expect(modUpdateState.modInstallName).toBe("True Level");
+    handler("skyrim", "archive-id", "Other-123", {});
+    expect(modUpdateState.modInstallName).toBe("True Level");
   });
 });

@@ -76,7 +76,7 @@ async function getOrderRules(
     mtimeMs = undefined;
   }
 
-  const cached = orderRulesCache.get(modId);
+  const cached = orderRulesCache.get(metadataPath);
   if (cached !== undefined && cached.mtimeMs === mtimeMs) {
     return cached.rules;
   }
@@ -96,12 +96,14 @@ async function getOrderRules(
     rules = undefined;
   }
 
-  orderRulesCache.set(modId, { mtimeMs, rules });
+  orderRulesCache.set(metadataPath, { mtimeMs, rules });
   return rules;
 }
 
+export type DeploymentFiles = Record<string, types.IDeployedFile[]>;
+
 /**
- * Records `deployed folder -> real Vortex mod id` from a deployment manifest.
+ * Records `deployed folder -> real Vortex mod id` from deployment event files.
  *
  * A mod's `installationPath` is its staging folder (e.g.
  * `True Level-156-1-6-3-1719534708`), not the folder it is deployed into
@@ -109,10 +111,15 @@ async function getOrderRules(
  * two. `relPath` is the deployed file path, so the `.mod` file's parent
  * directory is the load order id.
  */
-export function rememberDeploymentManifest(
-  deployment: types.IDeploymentManifest | undefined,
+export function rememberDeploymentFiles(
+  deployment: DeploymentFiles | undefined,
 ): void {
-  for (const file of deployment?.files ?? []) {
+  if (deployment === undefined) {
+    return;
+  }
+  modUpdateState.deploymentRevision++;
+  modUpdateState.deployedModIds.clear();
+  for (const file of Object.values(deployment).flat()) {
     if (!file.relPath.toLowerCase().endsWith(".mod")) {
       continue;
     }
@@ -125,13 +132,20 @@ export function rememberDeploymentManifest(
 }
 
 /** True when the mod folder has markers indicating it is managed by Vortex. */
-async function isVortexManaged(modFolderPath: string, folder: string): Promise<boolean> {
+async function isVortexManaged(
+  modFolderPath: string,
+  folder: string,
+): Promise<boolean> {
   try {
-    await fs.statAsync(path.join(modFolderPath, folder, "__folder_managed_by_vortex"));
+    await fs.statAsync(
+      path.join(modFolderPath, folder, "__folder_managed_by_vortex"),
+    );
     return true;
   } catch {
     try {
-      await fs.statAsync(path.join(modFolderPath, folder, `${folder}.mod.vortex_backup`));
+      await fs.statAsync(
+        path.join(modFolderPath, folder, `${folder}.mod.vortex_backup`),
+      );
       return true;
     } catch {
       return false;
@@ -146,11 +160,21 @@ async function isVortexManaged(modFolderPath: string, folder: string): Promise<b
  * manifest doesn't know about it yet.
  */
 async function resolveModId(
+  api: types.IExtensionApi,
   modFolderPath: string,
   folder: string,
 ): Promise<string | undefined> {
   const fromManifest = modUpdateState.deployedModIds.get(folder.toLowerCase());
   if (fromManifest !== undefined) {
+    const installed = api.getState().persistent.mods[GAME_ID] ?? {};
+    const owner = Object.entries(installed).find(
+      ([, mod]) => mod.installationPath === fromManifest,
+    );
+    if (owner !== undefined) {
+      // Keep the actual ID available while an update temporarily removes state.
+      modUpdateState.deployedModIds.set(folder.toLowerCase(), owner[0]);
+      return owner[0];
+    }
     return fromManifest;
   }
   return (await isVortexManaged(modFolderPath, folder)) ? folder : undefined;
@@ -158,7 +182,10 @@ async function resolveModId(
 
 /** Strips the disabled marker (`-- `) from a load order line and trims it. */
 function parseEntryId(line: string): string | undefined {
-  const id = line.replace(/^--\s?/, "").trim();
+  const id = line
+    .trim()
+    .replace(/^--\s?/, "")
+    .trim();
   return id === "" ? undefined : id;
 }
 
@@ -208,56 +235,23 @@ function getUpperBound(
   return firstBefore;
 }
 
-function insertModIntoLoadOrder(
-  loadOrder: LoadOrder,
-  addMod: LoadOrder[number],
-): void {
-  const rules = addMod.data?.orderRules;
-  let insertIdx: number | undefined;
-
-  if (rules !== undefined) {
-    const lowerBound = getLowerBound(loadOrder, rules);
-    if (lowerBound !== undefined) {
-      // `lowerBound + 1` is always a valid slot whenever the constraints are
-      // satisfiable, so honouring the lower bound is sufficient.
-      insertIdx = lowerBound + 1;
-    } else {
-      const upperBound = getUpperBound(loadOrder, rules);
-      if (upperBound !== undefined) {
-        insertIdx = upperBound;
-      }
-    }
-  }
-
-  if (insertIdx === undefined) {
-    loadOrder.push(addMod);
-  } else {
-    loadOrder.splice(insertIdx, 0, addMod);
-  }
-}
-
 /**
- * Orders mods that are new to the file so that `self_after`/`self_before`
- * constraints *between them* are satisfied. Without this, insertion would be
- * order-dependent: an alphabetical scan could place a mod before a dependency
- * that hasn't been added yet.
- *
- * Cycles and unsatisfiable constraints are left in their intrinsic
- * (alphabetical) order for `validate` to report.
+ * Insert new mods using constraints from both new and existing enabled mods.
+ * Existing entries form a fixed chain so discovery never undoes a user's
+ * ordering. Unconstrained additions follow the existing entries.
  */
-function orderNewMods(pending: LoadOrder): LoadOrder {
-  if (pending.length < 2) {
-    return pending;
+function insertNewMods(existing: LoadOrder, pending: LoadOrder): LoadOrder {
+  if (pending.length === 0) {
+    return existing;
   }
 
-  const byId = new Map(pending.map((mod) => [mod.id, mod]));
+  const entries = [...existing, ...pending];
+  const byId = new Map(entries.map((mod) => [mod.id, mod]));
+  const existingIds = new Set(existing.map((mod) => mod.id));
   const mustPrecede = new Map<string, Set<string>>();
-  const inDegree = new Map<string, number>(pending.map((mod) => [mod.id, 0]));
+  const inDegree = new Map(entries.map((mod) => [mod.id, 0]));
 
   const addEdge = (before: string, after: string): void => {
-    if (before === after || !byId.has(before) || !byId.has(after)) {
-      return;
-    }
     const targets = mustPrecede.get(before) ?? new Set<string>();
     if (targets.has(after)) {
       return;
@@ -267,40 +261,43 @@ function orderNewMods(pending: LoadOrder): LoadOrder {
     inDegree.set(after, (inDegree.get(after) ?? 0) + 1);
   };
 
-  for (const mod of pending) {
+  for (let idx = 1; idx < existing.length; idx++) {
+    addEdge(existing[idx - 1].id, existing[idx].id);
+  }
+
+  const addRule = (before: string, after: string): void => {
+    if (!byId.get(before)?.enabled || !byId.get(after)?.enabled) {
+      return;
+    }
+    // Existing user choices are checked by validate, not automatically changed.
+    if (existingIds.has(before) && existingIds.has(after)) {
+      return;
+    }
+    addEdge(before, after);
+  };
+
+  for (const mod of entries) {
     for (const dep of mod.data?.orderRules?.selfAfter ?? []) {
-      addEdge(dep, mod.id);
+      addRule(dep, mod.id);
     }
     for (const dep of mod.data?.orderRules?.selfBefore ?? []) {
-      addEdge(mod.id, dep);
+      addRule(mod.id, dep);
     }
   }
 
-  const ready = pending
-    .filter((mod) => (inDegree.get(mod.id) ?? 0) === 0)
-    .map((mod) => mod.id);
+  const remaining = new Set(entries.map((mod) => mod.id));
   const result: LoadOrder = [];
-
-  while (ready.length > 0) {
-    ready.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-    const id = ready.shift() as string;
-    result.push(byId.get(id) as LoadOrder[number]);
-
+  while (remaining.size > 0) {
+    // Stable priority keeps existing entries first, then alphabetical additions.
+    // If constraints conflict, break the cycle in that same stable order and
+    // leave the unsatisfied rules for validate to report.
+    const id =
+      [...remaining].find((id) => inDegree.get(id) === 0) ??
+      remaining.values().next().value!;
+    remaining.delete(id);
+    result.push(byId.get(id)!);
     for (const next of mustPrecede.get(id) ?? []) {
-      const degree = (inDegree.get(next) ?? 0) - 1;
-      inDegree.set(next, degree);
-      if (degree === 0) {
-        ready.push(next);
-      }
-    }
-  }
-
-  if (result.length < pending.length) {
-    const placed = new Set(result.map((mod) => mod.id));
-    for (const mod of pending) {
-      if (!placed.has(mod.id)) {
-        result.push(mod);
-      }
+      inDegree.set(next, inDegree.get(next)! - 1);
     }
   }
 
@@ -321,7 +318,8 @@ async function listModFolders(modFolderPath: string): Promise<string[]> {
   let entries: string[];
   try {
     entries = await fs.readdirAsync(modFolderPath);
-  } catch {
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
     return [];
   }
 
@@ -330,7 +328,8 @@ async function listModFolders(modFolderPath: string): Promise<string[]> {
       try {
         await fs.statAsync(path.join(modFolderPath, name, `${name}.mod`));
         return name;
-      } catch {
+      } catch (err) {
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
         return undefined;
       }
     }),
@@ -369,19 +368,48 @@ export async function deserializeLoadOrder(
     return [];
   }
 
+  // A session may open the load-order page before any deployment event fires.
+  // Read the persisted manifest once per game path; events keep it fresh after
+  // that. Do not let a slow disk read replace newer event data.
+  if (modUpdateState.manifestPath !== discovery.path) {
+    const previousPath = modUpdateState.manifestPath;
+    const revision = modUpdateState.deploymentRevision;
+    modUpdateState.manifestPath = discovery.path;
+    if (previousPath !== undefined) modUpdateState.deployedModIds.clear();
+    modUpdateState.manifestLoad = (async () => {
+      try {
+        const manifest = await util.getManifest(api, "", GAME_ID);
+        if (
+          revision === modUpdateState.deploymentRevision &&
+          modUpdateState.manifestPath === discovery.path
+        ) {
+          rememberDeploymentFiles({ "": manifest.files });
+        }
+      } catch {
+        // A missing/unreadable deployment manifest must not prevent manual mods
+        // from loading. A later deployment event can supply the ownership map.
+      }
+    })();
+  }
+  await modUpdateState.manifestLoad;
+
   const modFolderPath = path.join(discovery.path, "mods");
   const loadOrderPath = path.join(modFolderPath, "mod_load_order.txt");
 
   const loadOrderFile = await fs
     .readFileAsync(loadOrderPath, { encoding: "utf8" })
-    .catch(() => "");
+    .catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") throw err;
+      return "";
+    });
 
   const modFolders = await listModFolders(modFolderPath);
 
   const loadOrder: LoadOrder = [];
+  const seen = new Set<string>();
   for (const line of loadOrderFile.split("\n")) {
     const id = parseEntryId(line);
-    if (id === undefined || id === MANAGED_HEADER) {
+    if (id === undefined || id === MANAGED_HEADER || seen.has(id)) {
       continue;
     }
 
@@ -391,11 +419,12 @@ export async function deserializeLoadOrder(
       continue;
     }
 
+    seen.add(id);
     loadOrder.push({
       id,
       name: id,
-      modId: await resolveModId(modFolderPath, id),
-      enabled: !line.startsWith("--"),
+      modId: await resolveModId(api, modFolderPath, id),
+      enabled: !line.trimStart().startsWith("--"),
       data: { orderRules: await getOrderRules(modFolderPath, id) },
     });
   }
@@ -411,17 +440,13 @@ export async function deserializeLoadOrder(
     pending.push({
       id: folder,
       name: folder,
-      modId: await resolveModId(modFolderPath, folder),
+      modId: await resolveModId(api, modFolderPath, folder),
       enabled: true,
       data: { orderRules: await getOrderRules(modFolderPath, folder) },
     });
   }
 
-  for (const mod of orderNewMods(pending)) {
-    insertModIntoLoadOrder(loadOrder, mod);
-  }
-
-  return loadOrder;
+  return insertNewMods(loadOrder, pending);
 }
 
 export async function serializeLoadOrder(
@@ -443,6 +468,16 @@ export async function serializeLoadOrder(
     .join("\n");
 
   try {
+    // Current Vortex serializes before validating, and its UpdateSet restoration
+    // can move newly inserted entries. Never persist an invalid host order.
+    const validation = await validate([], loadOrder);
+    if (validation !== undefined) {
+      throw new util.DataInvalid(
+        validation.invalid
+          .map(({ id, reason }) => `${id}: ${reason}`)
+          .join("\n"),
+      );
+    }
     await fs.writeFileAsync(loadOrderPath, `-- ${MANAGED_HEADER}\n${output}`, {
       encoding: "utf8",
     });

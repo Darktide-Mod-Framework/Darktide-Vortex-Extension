@@ -63,9 +63,13 @@ export function installMods(...folders: string[]): void {
   setInstalledMods(mods);
 }
 
+const mtimes = new Map<string, number>();
+let nextMtime = 0;
+
 export function writeFile(filePath: string, content: string): void {
   const resolved = norm(filePath);
   vfs.files.set(resolved, content);
+  mtimes.set(resolved, ++nextMtime);
 
   let dir = path.dirname(resolved);
   while (!vfs.dirs.has(dir)) {
@@ -104,7 +108,7 @@ export const fs = {
   async statAsync(filePath: string): Promise<{ mtimeMs: number }> {
     const resolved = norm(filePath);
     if (vfs.dirs.has(resolved) || vfs.files.has(resolved)) {
-      return { mtimeMs: 0 };
+      return { mtimeMs: mtimes.get(resolved) ?? 0 };
     }
     throw Object.assign(new Error(`ENOENT: ${resolved}`), { code: "ENOENT" });
   },
@@ -156,15 +160,23 @@ export const selectors = {
     state?.lastActiveProfile?.[gameId],
 };
 
+export class DataInvalid extends Error {}
+
 export class ProcessCanceled extends Error {}
 export class UserCanceled extends Error {}
 
 export const util = {
+  DataInvalid,
   ProcessCanceled,
   UserCanceled,
   toBlue: (fn: unknown) => fn,
   opn: async () => undefined,
   GameStoreHelper: { find: async () => [] },
+  getManifest: async (
+    ..._args: unknown[]
+  ): Promise<{ files: Array<{ relPath: string; source: string }> }> => {
+    throw Object.assign(new Error("manifest not found"), { code: "ENOENT" });
+  },
 };
 
 // Only used in type positions; present so the import resolves at runtime.

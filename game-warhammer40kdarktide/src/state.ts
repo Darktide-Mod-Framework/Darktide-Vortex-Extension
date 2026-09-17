@@ -18,11 +18,17 @@ export const modUpdateState = {
 
   /**
    * Maps a deployed mod folder (the load order id, e.g. `true_level`) to the
-   * real installed Vortex mod id (the staging folder, e.g.
+   * deployment source (the staging folder, e.g.
    * `True Level-156-1-6-3-1719534708`), taken from the last deployment
-   * manifest. Vortex matches replacement entries by this id.
+   * manifest, resolved to the installed state key when read.
    */
   deployedModIds: new Map<string, string>(),
+
+  /** Directory whose persisted manifest has been checked during this session. */
+  manifestPath: undefined as string | undefined,
+  manifestLoad: undefined as Promise<void> | undefined,
+  /** Changes whenever an event supplies fresher deployment data. */
+  deploymentRevision: 0,
 };
 
 /** Forget the in-flight update. The deployed-mod-id map is kept. */

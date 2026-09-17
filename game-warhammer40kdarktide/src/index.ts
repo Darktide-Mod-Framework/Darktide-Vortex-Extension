@@ -7,8 +7,9 @@ import { GAME_ID, MS_APPID, STEAMAPP_ID, TOOLS } from "./constants";
 import { clearUpdateState, modUpdateState } from "./state";
 import {
   beginUpdate,
+  type DeploymentFiles,
   deserializeLoadOrder,
-  rememberDeploymentManifest,
+  rememberDeploymentFiles,
   serializeLoadOrder,
   validate,
 } from "./loadorder";
@@ -31,7 +32,10 @@ function sendWarning(id: string, message: string): void {
 
 // --- installer ------------------------------------------------------------
 
-function testSupportedContent(files: string[], gameId: string): Promise<types.ISupportedResult> {
+function testSupportedContent(
+  files: string[],
+  gameId: string,
+): Promise<types.ISupportedResult> {
   const supported =
     gameId === GAME_ID &&
     files.some(
@@ -54,7 +58,9 @@ function testSupportedContent(files: string[], gameId: string): Promise<types.IS
 }
 
 async function installContent(files: string[]): Promise<types.IInstallResult> {
-  const modFile = files.find((file) => path.extname(file).toLowerCase() === MOD_FILE_EXT);
+  const modFile = files.find(
+    (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT,
+  );
 
   if (modFile !== undefined && modFile.split("\\").length < 3) {
     return installMod(files);
@@ -74,7 +80,9 @@ async function installContent(files: string[]): Promise<types.IInstallResult> {
 }
 
 function installMod(files: string[]): types.IInstallResult {
-  const modFile = files.find((file) => path.extname(file).toLowerCase() === MOD_FILE_EXT);
+  const modFile = files.find(
+    (file) => path.extname(file).toLowerCase() === MOD_FILE_EXT,
+  );
   if (modFile === undefined) {
     return { instructions: [] };
   }
@@ -174,7 +182,9 @@ function requiresLauncher(
   return Promise.resolve(undefined);
 }
 
-async function prepareForModding(discovery: types.IDiscoveryResult): Promise<void> {
+async function prepareForModding(
+  discovery: types.IDiscoveryResult,
+): Promise<void> {
   if (discovery.path === undefined) {
     return;
   }
@@ -204,9 +214,9 @@ async function checkForDMF(modFrameworkPath: string): Promise<void> {
         {
           title: "Get DMF",
           action: () =>
-            util.opn("https://www.nexusmods.com/warhammer40kdarktide/mods/8").catch(
-              () => undefined,
-            ),
+            util
+              .opn("https://www.nexusmods.com/warhammer40kdarktide/mods/8")
+              .catch(() => undefined),
         },
       ],
     });
@@ -224,9 +234,9 @@ async function checkForDML(toggleModsPath: string): Promise<void> {
         {
           title: "Get DML",
           action: () =>
-            util.opn("https://www.nexusmods.com/warhammer40kdarktide/mods/19").catch(
-              () => undefined,
-            ),
+            util
+              .opn("https://www.nexusmods.com/warhammer40kdarktide/mods/19")
+              .catch(() => undefined),
         },
       ],
     });
@@ -255,7 +265,9 @@ function main(context: types.IExtensionContext): boolean {
     mergeMods: true,
     directoryCleaning: "tag",
     requiresCleanup: false,
-    requiresLauncher: util.toBlue(requiresLauncher) as types.IGame["requiresLauncher"],
+    requiresLauncher: util.toBlue(
+      requiresLauncher,
+    ) as types.IGame["requiresLauncher"],
     executable: () => "binaries/Darktide.exe",
     parameters: [
       "--bundle-dir",
@@ -268,7 +280,9 @@ function main(context: types.IExtensionContext): boolean {
       "https://bsp-td-prod.atoma.cloud",
     ],
     requiredFiles: ["launcher/Launcher.exe", "binaries/Darktide.exe"],
-    setup: util.toBlue((discovery: types.IDiscoveryResult) => prepareForModding(discovery)),
+    setup: util.toBlue((discovery: types.IDiscoveryResult) =>
+      prepareForModding(discovery),
+    ),
     environment: {
       SteamAPPId: STEAMAPP_ID,
     },
@@ -281,7 +295,8 @@ function main(context: types.IExtensionContext): boolean {
     gameId: GAME_ID,
     validate: validate as types.ILoadOrderGameInfo["validate"],
     deserializeLoadOrder: () => deserializeLoadOrder(context.api),
-    serializeLoadOrder: (loadOrder) => serializeLoadOrder(context.api, loadOrder),
+    serializeLoadOrder: (loadOrder) =>
+      serializeLoadOrder(context.api, loadOrder),
     toggleableEntries: true,
     noCollectionGeneration: true,
     usageInstructions:
@@ -295,42 +310,44 @@ function main(context: types.IExtensionContext): boolean {
     // Darktide update that is still in flight.
     context.api.onAsync(
       "did-deploy",
-      async (profileId: string, deployment?: types.IDeploymentManifest) => {
+      async (profileId: string, deployment?: DeploymentFiles) => {
         if (!isDarktideProfile(context.api, profileId)) {
           return;
         }
 
         // Refresh the folder -> mod id map so the load order can point each
         // entry at the installed mod Vortex knows about.
-        rememberDeploymentManifest(deployment);
+        rememberDeploymentFiles(deployment);
 
         // The replacement has been deployed; preservation is no longer needed.
         clearUpdateState();
 
-        const discovery = selectors.discoveryByGame(context.api.getState(), GAME_ID);
+        const discovery = selectors.discoveryByGame(
+          context.api.getState(),
+          GAME_ID,
+        );
         if (discovery?.path === undefined) {
           return;
         }
         try {
-          spawn(path.join(discovery.path, "tools", "dtkit-patch.exe"), ["--patch"]).on(
-            "error",
-            () => undefined,
-          );
+          spawn(path.join(discovery.path, "tools", "dtkit-patch.exe"), [
+            "--patch",
+          ]).on("error", () => undefined);
         } catch {
           // ignore
         }
       },
     );
 
-    // `will-deploy` carries the manifest being applied, so record the mapping
-    // as early as possible.
+    // `will-deploy` carries the previous deployment files by mod type. Keep
+    // their mapping available while files are being replaced.
     context.api.onAsync(
       "will-deploy",
-      async (profileId: string, deployment?: types.IDeploymentManifest) => {
+      async (profileId: string, deployment?: DeploymentFiles) => {
         if (!isDarktideProfile(context.api, profileId)) {
           return;
         }
-        rememberDeploymentManifest(deployment);
+        rememberDeploymentFiles(deployment);
       },
     );
 
@@ -342,12 +359,17 @@ function main(context: types.IExtensionContext): boolean {
 
       clearUpdateState();
 
-      const discovery = selectors.discoveryByGame(context.api.getState(), GAME_ID);
+      const discovery = selectors.discoveryByGame(
+        context.api.getState(),
+        GAME_ID,
+      );
       if (discovery?.path === undefined) {
         return;
       }
       try {
-        spawnSync(path.join(discovery.path, "tools", "dtkit-patch.exe"), ["--unpatch"]);
+        spawnSync(path.join(discovery.path, "tools", "dtkit-patch.exe"), [
+          "--unpatch",
+        ]);
       } catch {
         // ignore
       }
@@ -355,7 +377,8 @@ function main(context: types.IExtensionContext): boolean {
 
     context.api.events.on(
       "will-install-mod",
-      (_gameId: string, _archiveId: string, modId: string) => {
+      (gameId: string, _archiveId: string, modId: string) => {
+        if (gameId !== GAME_ID) return;
         modUpdateState.modInstallName = modId.split("-")[0];
       },
     );
@@ -388,7 +411,10 @@ function main(context: types.IExtensionContext): boolean {
 }
 
 /** True when the profile belongs to Darktide (deployment events are global). */
-export function isDarktideProfile(api: types.IExtensionApi, profileId?: string): boolean {
+export function isDarktideProfile(
+  api: types.IExtensionApi,
+  profileId?: string,
+): boolean {
   if (profileId === undefined) {
     return false;
   }
