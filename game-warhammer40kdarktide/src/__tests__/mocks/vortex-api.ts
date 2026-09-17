@@ -22,6 +22,7 @@ export const vortexState: any = {
 export function resetAll(): void {
   vfs.dirs.clear();
   vfs.files.clear();
+  vortexState.activeProfileId = undefined;
   vortexState.discovery = {};
   vortexState.profiles = {};
   vortexState.lastActiveProfile = {};
@@ -154,6 +155,7 @@ export const fs = {
 };
 
 export const selectors = {
+  activeProfile: (state: any) => state?.profiles?.[state.activeProfileId],
   discoveryByGame: (state: any, gameId: string) => state?.discovery?.[gameId],
   profileById: (state: any, profileId: string) => state?.profiles?.[profileId],
   lastActiveProfileForGame: (state: any, gameId: string) =>
@@ -181,3 +183,15 @@ export const util = {
 
 // Only used in type positions; present so the import resolves at runtime.
 export const types = {};
+
+// Host controls/actions used by the custom advisory row.
+export const Icon = "vortex-icon";
+export const LoadOrderIndexInput = "vortex-load-order-index";
+export const actions = {
+  setFBLoadOrder: (profileId: string, loadOrder: unknown) => ({
+    type: "SET_FB_LOAD_ORDER", payload: { profileId, loadOrder },
+  }),
+  setFBLoadOrderEntry: (profileId: string, loEntry: unknown) => ({
+    type: "SET_FB_LOAD_ORDER_ENTRY", payload: { profileId, loEntry },
+  }),
+};

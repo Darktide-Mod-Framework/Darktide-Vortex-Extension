@@ -11,8 +11,12 @@ import {
   deserializeLoadOrder,
   rememberDeploymentFiles,
   serializeLoadOrder,
-  validate,
+  warnAboutOrder,
 } from "./loadorder";
+
+import { orderMods, type LoadOrder } from "./ordering";
+import { createUsageInstructions } from "./UsageInstructions";
+import { createLoadOrderRow } from "./LoadOrderRow";
 
 const MOD_FILE_EXT = ".mod";
 const BAT_FILE_EXT = ".bat";
@@ -293,16 +297,61 @@ function main(context: types.IExtensionContext): boolean {
 
   context.registerLoadOrder({
     gameId: GAME_ID,
-    validate: validate as types.ILoadOrderGameInfo["validate"],
+    validate: ((prev: LoadOrder, current: LoadOrder) =>
+      warnAboutOrder(
+        context.api,
+        prev,
+        current,
+      )) as types.ILoadOrderGameInfo["validate"],
     deserializeLoadOrder: () => deserializeLoadOrder(context.api),
-    serializeLoadOrder: (loadOrder) =>
-      serializeLoadOrder(context.api, loadOrder),
+    serializeLoadOrder: (loadOrder, prev) =>
+      serializeLoadOrder(context.api, loadOrder, prev),
     toggleableEntries: true,
     noCollectionGeneration: true,
-    usageInstructions:
-      "Drag and drop to reorder mods. Mods lower in the list are loaded later and win conflicts. " +
-      "Use the toggles to enable or disable mods.",
+    usageInstructions: createUsageInstructions(context.api),
+    customItemRenderer: createLoadOrderRow(context.api),
   });
+
+  // Normalize the action before FBLO stores it. Sorting only inside serialize
+  // leaves Redux/the displayed rows in the host-restored order. Dispatching a
+  // second load-order action from serialize causes a feedback loop instead.
+  const normalizeOrderAction = (
+    state: types.IState & {
+      persistent: { loadOrder?: Record<string, LoadOrder> };
+    },
+    action: any,
+  ): undefined => {
+    const { profileId } = action.payload ?? {};
+    if (selectors.profileById(state, profileId)?.gameId !== GAME_ID) return;
+    const previous = (state.persistent.loadOrder?.[profileId] ??
+      []) as LoadOrder;
+    const incoming =
+      action.type === "SET_FB_LOAD_ORDER_ENTRY"
+        ? previous.map((entry) =>
+            entry.id === action.payload.loEntry.id
+              ? action.payload.loEntry
+              : entry,
+          )
+        : action.payload.loadOrder;
+    if (!Array.isArray(incoming)) return;
+    action.type = "SET_FB_LOAD_ORDER";
+    action.payload = {
+      ...action.payload,
+      loadOrder: orderMods(incoming, previous),
+    };
+  };
+  context.registerActionCheck(
+    "SET_FB_LOAD_ORDER",
+    normalizeOrderAction as unknown as Parameters<
+      types.IExtensionContext["registerActionCheck"]
+    >[1],
+  );
+  context.registerActionCheck(
+    "SET_FB_LOAD_ORDER_ENTRY",
+    normalizeOrderAction as unknown as Parameters<
+      types.IExtensionContext["registerActionCheck"]
+    >[1],
+  );
 
   context.once(() => {
     // Patch on deploy. `did-deploy` is global, so only react to Darktide's own

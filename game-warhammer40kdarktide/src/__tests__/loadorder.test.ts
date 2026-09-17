@@ -9,6 +9,7 @@ import {
   rememberDeploymentFiles,
   serializeLoadOrder,
   validate,
+  warnAboutOrder,
 } from "../loadorder";
 import { clearUpdateState, modUpdateState } from "../state";
 import {
@@ -178,10 +179,10 @@ describe("deserializeLoadOrder", () => {
       expected: ["x", "a"],
     },
     {
-      name: "preserves existing user order even when it violates a rule",
+      name: "repairs existing rule violations without a deliberate override",
       saved: ["y", "x"],
       rules: { x: { self_before: ["y"] } },
-      expected: ["y", "x", "a"],
+      expected: ["x", "y", "a"],
     },
   ])("$name", async ({ saved, rules, expected }) => {
     installMods(...expected);
@@ -201,7 +202,7 @@ describe("deserializeLoadOrder", () => {
     expect(loadOrder.map((mod) => mod.id)).toEqual(expected);
   });
 
-  it("keeps all mods and existing order when constraints conflict", async () => {
+  it("reorders existing mods to satisfy a new mod's constraints", async () => {
     installMods("x", "y", "a");
     for (const id of ["x", "y", "a"]) {
       addModFolder(id);
@@ -217,10 +218,8 @@ describe("deserializeLoadOrder", () => {
     const loadOrder = await deserializeLoadOrder(api);
     const ids = loadOrder.map((mod) => mod.id);
 
-    expect(ids).toEqual(["x", "y", "a"]);
-    expect((await validate([], loadOrder))?.invalid).toEqual([
-      { id: "a", reason: "Should be after y but before x." },
-    ]);
+    expect(ids).toEqual(["y", "a", "x"]);
+    expect(await validate([], loadOrder)).toBeUndefined();
   });
 
   it("reports a cycle between new mods without losing entries", async () => {
@@ -479,7 +478,7 @@ describe("load order edge cases", () => {
         const order = await deserializeLoadOrder(api);
         const actual = order.map((mod) => mod.id);
         expect(new Set(actual).size).toBe(4);
-        expect(actual.filter((id) => existing.includes(id))).toEqual(existing);
+        // Existing indices are priorities, not fixed constraints.
         for (const [from, to] of selected)
           expect(actual.indexOf(from)).toBeLessThan(actual.indexOf(to));
         expect(await validate([], order)).toBeUndefined();
@@ -493,7 +492,7 @@ describe("load order edge cases", () => {
 });
 
 describe("Vortex serialization lifecycle", () => {
-  it("rejects a host-restored order that puts a dependency after its dependent", async () => {
+  it("repairs a host-restored order that puts a dependency after its dependent", async () => {
     addModFolder("x");
     setOrder([HEADER_LINE, "x"]);
     addModFolder("a");
@@ -507,10 +506,8 @@ describe("Vortex serialization lifecycle", () => {
     // Vortex 6ffb794 UpdateSet.restore uses saved x.index=0 alongside
     // the new entries' indices 0 and 1, yielding a,x,b.
     const restored = [order[0], order[2], order[1]];
-    await expect(serializeLoadOrder(api, restored)).rejects.toThrow(
-      "Should be before x.",
-    );
-    expect(readOrder()).toEqual([HEADER_LINE, "x"]);
+    await serializeLoadOrder(api, restored);
+    expect(readOrder()).toEqual([HEADER_LINE, "a", "b", "x"]);
   });
 });
 
@@ -579,4 +576,199 @@ it("shares a pending startup manifest read between concurrent deserializations",
   } finally {
     spy.mockRestore();
   }
+});
+
+describe("deliberate rule exceptions", () => {
+  async function setup() {
+    for (const id of ["a", "b", "c"]) addModFolder(id);
+    writeFile(
+      path.join(MODS_PATH, "b", "info.json"),
+      JSON.stringify({
+        dependencies: { self_after: ["a"] },
+      }),
+    );
+    setOrder([HEADER_LINE, "a", "b", "c"]);
+    return deserializeLoadOrder(api);
+  }
+
+  it("persists an intentional violation across fresh reads and clears it when repaired", async () => {
+    const prev = await setup();
+    await serializeLoadOrder(api, [prev[1], prev[0], prev[2]], prev);
+    const broken = await deserializeLoadOrder(api);
+    expect(broken.map((m) => m.id)).toEqual(["b", "a", "c"]);
+    expect((await validate([], broken))?.invalid).toEqual([
+      { id: "b", reason: "Should be after a." },
+    ]);
+    expect(readFileText(ORDER_PATH)).toContain("Vortex ordering overrides:");
+    await serializeLoadOrder(api, [broken[1], broken[0], broken[2]], broken);
+    expect(readFileText(ORDER_PATH)).not.toContain(
+      "Vortex ordering overrides:",
+    );
+    expect(await validate([], await deserializeLoadOrder(api))).toBeUndefined();
+    // A metadata update may now move a past b, proving no index remains pinned.
+    writeFile(
+      path.join(MODS_PATH, "b", "info.json"),
+      JSON.stringify({
+        dependencies: { self_before: ["a"] },
+      }),
+    );
+    expect((await deserializeLoadOrder(api)).map((m) => m.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+  });
+
+  it("allows rule exceptions without notifications and clears legacy warnings", async () => {
+    const prev = await setup();
+    const warningApi = {
+      ...api,
+      sendNotification: vi.fn(),
+      dismissNotification: vi.fn(),
+    };
+    expect(
+      await warnAboutOrder(warningApi, prev, [prev[1], prev[0], prev[2]]),
+    ).toBeUndefined();
+    expect(warningApi.sendNotification).not.toHaveBeenCalled();
+    expect(await warnAboutOrder(warningApi, prev, prev)).toBeUndefined();
+    expect(warningApi.dismissNotification).toHaveBeenCalledWith(
+      "darktide-load-order-rules",
+    );
+  });
+
+  it("retains only the reversed relationship while sorting new dependencies", async () => {
+    const prev = await setup();
+    await serializeLoadOrder(api, [prev[1], prev[0], prev[2]], prev);
+    addModFolder("z");
+    writeFile(
+      path.join(MODS_PATH, "b", "info.json"),
+      JSON.stringify({
+        dependencies: { self_after: ["a", "z"] },
+      }),
+    );
+    const order = await deserializeLoadOrder(api);
+    const ids = order.map((m) => m.id);
+    expect(ids.indexOf("b")).toBeLessThan(ids.indexOf("a"));
+    expect(ids.indexOf("z")).toBeLessThan(ids.indexOf("b"));
+    expect(order.find((m) => m.id === "a")?.data?.ignoredBefore).toEqual(["b"]);
+  });
+
+  it("does not infer user intent from UpdateSet restoration of the same mod set", async () => {
+    const previous = await setup();
+    const fresh = await deserializeLoadOrder(api);
+    await serializeLoadOrder(api, [fresh[1], fresh[0], fresh[2]], previous);
+    expect(readOrder()).toEqual([HEADER_LINE, "a", "b", "c"]);
+  });
+
+  it("does not infer user intent when enabling a dependency", async () => {
+    const previous = await setup();
+    const disabled = [
+      previous[1],
+      { ...previous[0], enabled: false },
+      previous[2],
+    ];
+    await serializeLoadOrder(api, disabled, previous);
+    const shown = await deserializeLoadOrder(api);
+    await serializeLoadOrder(
+      api,
+      shown.map((m) => ({ ...m, enabled: true })),
+      shown,
+    );
+    expect(readOrder()).toEqual([HEADER_LINE, "a", "b", "c"]);
+  });
+
+  it("keeps profile exceptions separate and restores them when switching back", async () => {
+    vortexState.lastActiveProfile["warhammer40kdarktide"] = "profile-1";
+    const prev = await setup();
+    await serializeLoadOrder(api, [prev[1], prev[0], prev[2]], prev);
+    vortexState.lastActiveProfile["warhammer40kdarktide"] = "profile-2";
+    const other = await deserializeLoadOrder(api);
+    expect(other.map((m) => m.id)).toEqual(["a", "b", "c"]);
+    await serializeLoadOrder(api, other);
+    vortexState.lastActiveProfile["warhammer40kdarktide"] = "profile-1";
+    expect((await deserializeLoadOrder(api)).map((m) => m.id)).toEqual([
+      "b",
+      "a",
+      "c",
+    ]);
+  });
+
+  it("preserves the exception while an updated mod's metadata is temporarily absent", async () => {
+    const prev = await setup();
+    await serializeLoadOrder(api, [prev[1], prev[0], prev[2]], prev);
+    beginUpdate(api);
+    removeModFolder("b");
+    const during = await deserializeLoadOrder(api);
+    await serializeLoadOrder(api, during);
+    expect(during.map((m) => m.id)).toEqual(["b", "a", "c"]);
+    expect(readFileText(ORDER_PATH)).toContain("Vortex ordering overrides:");
+  });
+
+  it("clears an override when its rule is removed", async () => {
+    const prev = await setup();
+    await serializeLoadOrder(api, [prev[1], prev[0], prev[2]], prev);
+    writeFile(path.join(MODS_PATH, "b", "info.json"), "{}");
+    await serializeLoadOrder(api, await deserializeLoadOrder(api));
+    expect(readFileText(ORDER_PATH)).not.toContain(
+      "Vortex ordering overrides:",
+    );
+  });
+});
+
+it("persists automatic sorting even if Vortex sees no Redux order change", async () => {
+  addModFolder("a");
+  addModFolder("b");
+  writeFile(
+    path.join(MODS_PATH, "b", "info.json"),
+    JSON.stringify({ dependencies: { self_after: ["a"] } }),
+  );
+  setOrder([HEADER_LINE, "b", "a"]);
+  await deserializeLoadOrder(api);
+  expect(readOrder()).toEqual([HEADER_LINE, "a", "b"]);
+});
+
+it("keeps cycles stable across read/write cycles and allows missing required mods", async () => {
+  for (const [id, other] of [
+    ["a", "b"],
+    ["b", "a"],
+  ]) {
+    addModFolder(id);
+    writeFile(
+      path.join(MODS_PATH, id, "info.json"),
+      JSON.stringify({
+        dependencies: { self_after: [other], required: ["missing"] },
+      }),
+    );
+  }
+  const first = await deserializeLoadOrder(api);
+  for (let i = 0; i < 3; i++) {
+    await serializeLoadOrder(api, first);
+    expect((await deserializeLoadOrder(api)).map((m) => m.id)).toEqual(
+      first.map((m) => m.id),
+    );
+  }
+  expect((await validate([], first))?.invalid).toHaveLength(2);
+});
+
+it("does not record a failed manual save as a durable exception", async () => {
+  for (const id of ["a", "b"]) addModFolder(id);
+  writeFile(
+    path.join(MODS_PATH, "b", "info.json"),
+    JSON.stringify({ dependencies: { self_after: ["a"] } }),
+  );
+  const previous = await deserializeLoadOrder(api);
+  const error = new Error("disk full");
+  const write = vi.spyOn(fs, "writeFileAsync").mockRejectedValueOnce(error);
+  try {
+    await expect(
+      serializeLoadOrder(api, [...previous].reverse(), previous),
+    ).rejects.toBe(error);
+  } finally {
+    write.mockRestore();
+  }
+  expect((await deserializeLoadOrder(api)).map((m) => m.id)).toEqual([
+    "a",
+    "b",
+  ]);
+  expect(readFileText(ORDER_PATH)).not.toContain("Vortex ordering overrides:");
 });

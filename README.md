@@ -31,6 +31,24 @@ In the Mods tab you can manage which mods are installed. Drop mods here and pres
 
 In the Load order tab you can control **which are enabled in game** and in **which order they are loaded**. Load order is only important when mods depend on each other or they override each others behaviour. Last mod loaded wins.
 
+Mods are automatically sorted using enabled mods' `info.json` `self_after` and
+`self_before` rules, including rules changed by mod updates. Missing `required`
+mods and unsatisfied ordering rules produce warnings, without preventing saves.
+
+You can deliberately drag a mod (or edit its load index) across an ordering rule.
+Vortex keeps that reversed relationship and warns, for example,
+`b: Should be after a.` Other dependencies continue to sort automatically.
+Moving the mods back into a valid relative order removes the exception immediately:
+no absolute index is pinned. Disabling/removing a target or removing its rule also
+clears that exception. Cyclic rules produce warnings and a deterministic order.
+
+Exceptions survive restarts and are scoped to the game path and Vortex profile.
+They are stored in a Lua comment in `mods/mod_load_order.txt`; ordinary enabled
+and disabled mod lines remain compatible with DMF. Existing orders without recorded
+exceptions are automatically corrected on first read. Intentional overrides are
+recognized from reordering the displayed list in Vortex, not from deployment
+restoration or editing the text file externally.
+
 ### Tools
 
 The modding tools come with a patcher which modifies the game to load mods. From the Vortex Dashboard you can run this tool to patch or unpatch the game. This will need to be done after each patch.
@@ -48,7 +66,8 @@ npm run build
 `npm run build` compiles `game-warhammer40kdarktide/src/**/*.ts` into
 `game-warhammer40kdarktide/dist/` and copies the checked-in `info.json` and
 assets alongside it. Package the **contents of `dist/`** (not the outer folder)
-as the extension zip.
+as the extension zip. The build creates a ZIP automatically; Linux/macOS require
+the `zip` command, while Windows uses PowerShell.
 
 `dist/` is cleared before compilation, so renamed or deleted source files can't
 leave stale output in the package.

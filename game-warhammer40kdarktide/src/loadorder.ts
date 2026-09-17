@@ -1,4 +1,6 @@
 import path from "path";
+import { randomUUID } from "crypto";
+import { orderMods, type LoadOrder, type OrderRules } from "./ordering";
 
 import { fs, selectors, types, util } from "@nexusmods/vortex-api";
 
@@ -6,24 +8,49 @@ import { GAME_ID } from "./constants";
 import { modUpdateState } from "./state";
 
 /**
- * Rules read from a mod's optional `info.json` file, following the community
- * convention documented at:
- * https://dmf-docs.darkti.de/#/expanded-metadata
- */
-interface OrderRules {
-  required?: string[];
-  selfAfter?: string[];
-  selfBefore?: string[];
-}
-
-type LoadOrderEntryData = { orderRules?: OrderRules };
-type LoadOrder = types.ILoadOrderEntry<LoadOrderEntryData>[];
-
-/**
  * First line written by `serializeLoadOrder`. It is a marker for humans, not a
  * mod, and must be skipped when reading the file back.
  */
 export const MANAGED_HEADER = "File managed by Vortex mod manager";
+const OVERRIDE_HEADER = "-- Vortex ordering overrides: ";
+
+function scopeFor(api: types.IExtensionApi): string {
+  const state = api.getState();
+  return JSON.stringify([
+    selectors.discoveryByGame(state, GAME_ID)?.path,
+    selectors.lastActiveProfileForGame(state, GAME_ID),
+  ]);
+}
+
+type SavedOverrides = Record<string, Array<[string, string[]]>>;
+
+function readOverrides(file: string): SavedOverrides {
+  try {
+    const line = file
+      .split("\n")
+      .find((line) => line.startsWith(OVERRIDE_HEADER));
+    if (!line) return {};
+    const saved: unknown = JSON.parse(line.slice(OVERRIDE_HEADER.length));
+    if (saved === null || typeof saved !== "object" || Array.isArray(saved))
+      return {};
+    return Object.fromEntries(
+      Object.entries(saved).filter(
+        ([, entries]) =>
+          Array.isArray(entries) &&
+          entries.every(
+            (entry: unknown) =>
+              Array.isArray(entry) &&
+              entry.length === 2 &&
+              typeof entry[0] === "string" &&
+              Array.isArray(entry[1]) &&
+              entry[1].every((id: unknown) => typeof id === "string"),
+          ),
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
 
 // Cache info.json parsing results per mod, invalidated by file mtime so we
 // don't re-read unchanged metadata on every deserialization.
@@ -77,7 +104,11 @@ async function getOrderRules(
   }
 
   const cached = orderRulesCache.get(metadataPath);
-  if (cached !== undefined && cached.mtimeMs === mtimeMs) {
+  if (
+    cached !== undefined &&
+    (cached.mtimeMs === mtimeMs ||
+      (mtimeMs === undefined && modUpdateState.updateInProgress))
+  ) {
     return cached.rules;
   }
 
@@ -235,75 +266,6 @@ function getUpperBound(
   return firstBefore;
 }
 
-/**
- * Insert new mods using constraints from both new and existing enabled mods.
- * Existing entries form a fixed chain so discovery never undoes a user's
- * ordering. Unconstrained additions follow the existing entries.
- */
-function insertNewMods(existing: LoadOrder, pending: LoadOrder): LoadOrder {
-  if (pending.length === 0) {
-    return existing;
-  }
-
-  const entries = [...existing, ...pending];
-  const byId = new Map(entries.map((mod) => [mod.id, mod]));
-  const existingIds = new Set(existing.map((mod) => mod.id));
-  const mustPrecede = new Map<string, Set<string>>();
-  const inDegree = new Map(entries.map((mod) => [mod.id, 0]));
-
-  const addEdge = (before: string, after: string): void => {
-    const targets = mustPrecede.get(before) ?? new Set<string>();
-    if (targets.has(after)) {
-      return;
-    }
-    targets.add(after);
-    mustPrecede.set(before, targets);
-    inDegree.set(after, (inDegree.get(after) ?? 0) + 1);
-  };
-
-  for (let idx = 1; idx < existing.length; idx++) {
-    addEdge(existing[idx - 1].id, existing[idx].id);
-  }
-
-  const addRule = (before: string, after: string): void => {
-    if (!byId.get(before)?.enabled || !byId.get(after)?.enabled) {
-      return;
-    }
-    // Existing user choices are checked by validate, not automatically changed.
-    if (existingIds.has(before) && existingIds.has(after)) {
-      return;
-    }
-    addEdge(before, after);
-  };
-
-  for (const mod of entries) {
-    for (const dep of mod.data?.orderRules?.selfAfter ?? []) {
-      addRule(dep, mod.id);
-    }
-    for (const dep of mod.data?.orderRules?.selfBefore ?? []) {
-      addRule(mod.id, dep);
-    }
-  }
-
-  const remaining = new Set(entries.map((mod) => mod.id));
-  const result: LoadOrder = [];
-  while (remaining.size > 0) {
-    // Stable priority keeps existing entries first, then alphabetical additions.
-    // If constraints conflict, break the cycle in that same stable order and
-    // leave the unsatisfied rules for validate to report.
-    const id =
-      [...remaining].find((id) => inDegree.get(id) === 0) ??
-      remaining.values().next().value!;
-    remaining.delete(id);
-    result.push(byId.get(id)!);
-    for (const next of mustPrecede.get(id) ?? []) {
-      inDegree.set(next, inDegree.get(next)! - 1);
-    }
-  }
-
-  return result;
-}
-
 function enabledDeps(loadOrder: LoadOrder, deps: string[] | undefined): string {
   if (deps === undefined) {
     return "";
@@ -404,10 +366,14 @@ export async function deserializeLoadOrder(
     });
 
   const modFolders = await listModFolders(modFolderPath);
+  const scope = scopeFor(api);
+  const readToken = randomUUID();
+  const overrides = new Map(readOverrides(loadOrderFile)[scope] ?? []);
 
   const loadOrder: LoadOrder = [];
   const seen = new Set<string>();
   for (const line of loadOrderFile.split("\n")) {
+    if (line.startsWith(OVERRIDE_HEADER)) continue;
     const id = parseEntryId(line);
     if (id === undefined || id === MANAGED_HEADER || seen.has(id)) {
       continue;
@@ -425,7 +391,12 @@ export async function deserializeLoadOrder(
       name: id,
       modId: await resolveModId(api, modFolderPath, id),
       enabled: !line.trimStart().startsWith("--"),
-      data: { orderRules: await getOrderRules(modFolderPath, id) },
+      data: {
+        orderRules: await getOrderRules(modFolderPath, id),
+        scope,
+        readToken,
+        ignoredBefore: overrides.get(id),
+      },
     });
   }
 
@@ -442,16 +413,28 @@ export async function deserializeLoadOrder(
       name: folder,
       modId: await resolveModId(api, modFolderPath, folder),
       enabled: true,
-      data: { orderRules: await getOrderRules(modFolderPath, folder) },
+      data: {
+        orderRules: await getOrderRules(modFolderPath, folder),
+        scope,
+        readToken,
+      },
     });
   }
 
-  return insertNewMods(loadOrder, pending);
+  const ordered = orderMods([...loadOrder, ...pending]);
+  // FBLO may skip serialization when this matches its existing Redux order.
+  // Persist discovery/metadata-driven sorting now so the game and UI agree even
+  // on that path. No user intent is inferred during a disk read.
+  if (ordered.length > 0 || loadOrderFile !== "") {
+    await writeOrder(loadOrderPath, ordered, scope, loadOrderFile);
+  }
+  return ordered;
 }
 
 export async function serializeLoadOrder(
   api: types.IExtensionApi,
   loadOrder: LoadOrder,
+  prev: LoadOrder = [],
 ): Promise<void> {
   const state = api.getState();
   const discovery = selectors.discoveryByGame(state, GAME_ID);
@@ -461,26 +444,17 @@ export async function serializeLoadOrder(
 
   const loadOrderPath = path.join(discovery.path, "mods", "mod_load_order.txt");
 
-  // The array handed to us is already in the order the user chose. Write it as
-  // given - reordering here would override a drag-and-drop change.
-  const output = loadOrder
-    .map((mod) => (mod.enabled ? mod.id : `-- ${mod.id}`))
-    .join("\n");
-
+  // The action check normalizes before Redux stores the order, so UI and disk
+  // agree. Normalize defensively for direct callers as well.
+  const ordered = orderMods(loadOrder, prev);
   try {
-    // Current Vortex serializes before validating, and its UpdateSet restoration
-    // can move newly inserted entries. Never persist an invalid host order.
-    const validation = await validate([], loadOrder);
-    if (validation !== undefined) {
-      throw new util.DataInvalid(
-        validation.invalid
-          .map(({ id, reason }) => `${id}: ${reason}`)
-          .join("\n"),
-      );
-    }
-    await fs.writeFileAsync(loadOrderPath, `-- ${MANAGED_HEADER}\n${output}`, {
-      encoding: "utf8",
-    });
+    const previousFile = await fs
+      .readFileAsync(loadOrderPath, { encoding: "utf8" })
+      .catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "ENOENT") throw err;
+        return "";
+      });
+    await writeOrder(loadOrderPath, ordered, scopeFor(api), previousFile);
   } catch (err) {
     const allowReport = !(err instanceof util.UserCanceled);
     api.showErrorNotification?.("Failed to save load order", err, {
@@ -490,11 +464,41 @@ export async function serializeLoadOrder(
   }
 }
 
-export async function validate(
-  prev: LoadOrder,
-  current: LoadOrder,
-): Promise<types.IValidationResult | undefined> {
-  const invalid: Array<{ id: string; reason: string }> = [];
+async function writeOrder(
+  loadOrderPath: string,
+  ordered: LoadOrder,
+  scope: string,
+  previousFile: string,
+): Promise<void> {
+  const entries: Array<[string, string[]]> = ordered
+    .filter((m) => m.data?.ignoredBefore?.length)
+    .map((m) => [m.id, m.data!.ignoredBefore!]);
+  // Keep exceptions for other profiles when the shared game file changes.
+  // Storing metadata with the order avoids separate-file partial writes.
+  const saved = readOverrides(previousFile);
+  if (entries.length) saved[scope] = entries;
+  else delete saved[scope];
+  const metadata = Object.keys(saved).length
+    ? `${OVERRIDE_HEADER}${JSON.stringify(saved)}\n`
+    : "";
+  const output = ordered
+    .map((mod) => (mod.enabled ? mod.id : `-- ${mod.id}`))
+    .join("\n");
+  const contents = `-- ${MANAGED_HEADER}\n${metadata}${output}`;
+  if (contents !== previousFile) {
+    await fs.writeFileAsync(loadOrderPath, contents, { encoding: "utf8" });
+  }
+}
+
+export interface OrderWarning {
+  id: string;
+  kind: "ordering" | "dependency";
+  reason: string;
+}
+
+/** Shared rule checks for advisory rows and the instructions panel. */
+export function getOrderWarnings(current: LoadOrder): OrderWarning[] {
+  const warnings: OrderWarning[] = [];
 
   for (let idx = 0; idx < current.length; idx++) {
     const mod = current[idx];
@@ -525,24 +529,50 @@ export async function validate(
       }
     }
 
+    if (errorMessage !== undefined) {
+      warnings.push({ id: mod.id, kind: "ordering", reason: errorMessage });
+    }
+
     if (rules.required !== undefined) {
       const missing = rules.required.filter((dep) => {
         const requiredMod = current.find((m) => m.id === dep);
         return requiredMod === undefined || !requiredMod.enabled;
       });
       if (missing.length > 0) {
-        const requireMessage = `Requires ${missing.join(", ")}.`;
-        errorMessage =
-          errorMessage === undefined
-            ? requireMessage
-            : `${requireMessage} ${errorMessage}`;
+        warnings.push({
+          id: mod.id,
+          kind: "dependency",
+          reason: `Requires ${missing.join(", ")}.`,
+        });
       }
     }
-
-    if (errorMessage !== undefined) {
-      invalid.push({ id: mod.id, reason: errorMessage });
-    }
   }
+  return warnings;
+}
 
+export async function validate(
+  prev: LoadOrder,
+  current: LoadOrder,
+): Promise<types.IValidationResult | undefined> {
+  const messages = new Map<string, string>();
+  for (const warning of getOrderWarnings(current)) {
+    const existing = messages.get(warning.id);
+    messages.set(warning.id, existing === undefined
+      ? warning.reason
+      : `${warning.reason} ${existing}`);
+  }
+  const invalid = [...messages].map(([id, reason]) => ({ id, reason }));
   return invalid.length > 0 ? { invalid } : undefined;
+}
+
+/** Rule failures are advisory: FBLO's invalid result can lock/reject an order. */
+export async function warnAboutOrder(
+  api: types.IExtensionApi,
+  prev: LoadOrder,
+  current: LoadOrder,
+): Promise<types.IValidationResult | undefined> {
+  // Clear notifications left by earlier extension versions. Warnings now live
+  // in the usage instructions, independently of FBLO's blocking validation.
+  api.dismissNotification?.("darktide-load-order-rules");
+  return undefined;
 }

@@ -16,6 +16,7 @@ import {
   addModFolder,
   installMods,
   removeModFolder,
+  readFileText,
   resetAll,
   setGamePath,
   vortexState,
@@ -47,6 +48,7 @@ function createContext() {
           eventHandlers.set(name, handler),
       },
     },
+    registerActionCheck: vi.fn(),
     registerInstaller: vi.fn(),
     registerGame: vi.fn(),
     registerLoadOrder: vi.fn(),
@@ -248,5 +250,104 @@ describe("installation event contract", () => {
     expect(modUpdateState.modInstallName).toBe("True Level");
     handler("skyrim", "archive-id", "Other-123", {});
     expect(modUpdateState.modInstallName).toBe("True Level");
+  });
+});
+
+describe("Vortex load-order action integration", () => {
+  async function setup() {
+    vortexState.profiles["p-dt"] = { id: "p-dt", gameId: GAME_ID };
+    vortexState.lastActiveProfile[GAME_ID] = "p-dt";
+    const { context } = createContext();
+    main(context as any);
+    const checks = new Map(context.registerActionCheck.mock.calls);
+    const registration = context.registerLoadOrder.mock.calls[0][0];
+    const apply = async (incoming: any, type = "SET_FB_LOAD_ORDER") => {
+      const previous = vortexState.persistent.loadOrder?.["p-dt"] ?? [];
+      const action = { type, payload: { profileId: "p-dt", ...incoming } };
+      expect(checks.get(type)?.(vortexState, action)).toBeUndefined();
+      // Match reduxSanity -> reducer -> FBLO state watcher -> serializer -> validate.
+      expect(action.type).toBe("SET_FB_LOAD_ORDER");
+      vortexState.persistent.loadOrder = { "p-dt": action.payload.loadOrder };
+      await registration.serializeLoadOrder(action.payload.loadOrder, previous);
+      expect(
+        await registration.validate(
+          action.payload.loadOrder,
+          action.payload.loadOrder,
+        ),
+      ).toBeUndefined();
+      return action.payload.loadOrder;
+    };
+    for (const id of ["a", "b", "c"]) addModFolder(id);
+    writeFile(
+      path.join(GAME_PATH, "mods", "b", "info.json"),
+      JSON.stringify({ dependencies: { self_after: ["a"] } }),
+    );
+    setOrder([HEADER_LINE, "a", "b", "c"]);
+    const shown = await registration.deserializeLoadOrder();
+    await apply({ loadOrder: shown });
+    return { context, registration, apply, shown, checks };
+  }
+
+  it("keeps UI, disk and warnings consistent for a drag and repair", async () => {
+    const { shown, apply, registration, context } = await setup();
+    const broken = await apply({ loadOrder: [shown[1], shown[0], shown[2]] });
+    expect(broken.map((m: any) => m.id)).toEqual(["b", "a", "c"]);
+    expect(
+      (await registration.deserializeLoadOrder()).map((m: any) => m.id),
+    ).toEqual(["b", "a", "c"]);
+    expect(context.api.sendNotification).not.toHaveBeenCalled();
+    expect(typeof registration.usageInstructions).toBe("function");
+    const repaired = await apply({
+      loadOrder: [broken[1], broken[0], broken[2]],
+    });
+    expect(repaired.every((m: any) => m.data.ignoredBefore === undefined)).toBe(
+      true,
+    );
+    expect(
+      (await registration.deserializeLoadOrder()).map((m: any) => m.id),
+    ).toEqual(["a", "b", "c"]);
+  });
+
+  it("repairs UpdateSet restoration before Redux stores it", async () => {
+    const { apply, registration } = await setup();
+    const fresh = await registration.deserializeLoadOrder();
+    const stored = await apply({ loadOrder: [fresh[1], fresh[0], fresh[2]] });
+    expect(stored.map((m: any) => m.id)).toEqual(["a", "b", "c"]);
+    expect(readFileText(ORDER_PATH)).toBe(`${HEADER_LINE}\na\nb\nc`);
+    expect(stored.every((m: any) => m.data.ignoredBefore === undefined)).toBe(
+      true,
+    );
+  });
+
+  it("normalizes the individual-entry toggle action without creating an override", async () => {
+    const { shown, apply } = await setup();
+    await apply(
+      { loEntry: { ...shown[0], enabled: false } },
+      "SET_FB_LOAD_ORDER_ENTRY",
+    );
+    let stored = vortexState.persistent.loadOrder["p-dt"];
+    stored = await apply({ loadOrder: [stored[1], stored[0], stored[2]] });
+    expect(stored.map((m: any) => m.id)).toEqual(["b", "a", "c"]);
+    stored = await apply(
+      { loEntry: { ...stored[1], enabled: true } },
+      "SET_FB_LOAD_ORDER_ENTRY",
+    );
+    expect(stored.map((m: any) => m.id)).toEqual(["a", "b", "c"]);
+    expect(readFileText(ORDER_PATH)).toBe(`${HEADER_LINE}\na\nb\nc`);
+    expect(stored.every((m: any) => m.data.ignoredBefore === undefined)).toBe(
+      true,
+    );
+  });
+
+  it("leaves other games' actions untouched", async () => {
+    const { checks } = await setup();
+    vortexState.profiles.other = { gameId: "skyrim" };
+    const action = {
+      type: "SET_FB_LOAD_ORDER",
+      payload: { profileId: "other", loadOrder: [] },
+    };
+    const payload = action.payload;
+    checks.get(action.type)?.(vortexState, action);
+    expect(action.payload).toBe(payload);
   });
 });
