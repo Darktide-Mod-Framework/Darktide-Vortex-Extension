@@ -1,7 +1,7 @@
 {
   "name": "vortex-extension-darktide",
   "private": true,
-  "version": "1.5.4",
+  "version": "2.0.0",
   "description": "Support for Warhammer 40,000: Darktide",
   "type": "commonjs",
   "scripts": {
