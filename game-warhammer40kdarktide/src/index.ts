@@ -4,12 +4,17 @@ import { spawn, spawnSync } from "child_process";
 import { fs, selectors, types, util } from "@nexusmods/vortex-api";
 
 import { GAME_ID, MS_APPID, STEAMAPP_ID, TOOLS } from "./constants";
-import { clearUpdateState, modUpdateState } from "./state";
+import { clearUpdateState, loadOrderState, modUpdateState } from "./state";
 import {
   beginUpdate,
+  beginPurge,
+  completeDeployment,
+  completePurge,
   type DeploymentFiles,
   deserializeLoadOrder,
   rememberDeploymentFiles,
+  rememberLoadOrderProfile,
+  reconcilePurge,
   serializeLoadOrder,
   warnAboutOrder,
 } from "./loadorder";
@@ -310,6 +315,7 @@ function main(context: types.IExtensionContext): boolean {
     noCollectionGeneration: true,
     usageInstructions: createUsageInstructions(context.api),
     customItemRenderer: createLoadOrderRow(context.api),
+    uniformRowHeight: true,
   });
 
   // Normalize the action before FBLO stores it. Sorting only inside serialize
@@ -367,9 +373,11 @@ function main(context: types.IExtensionContext): boolean {
         // Refresh the folder -> mod id map so the load order can point each
         // entry at the installed mod Vortex knows about.
         rememberDeploymentFiles(deployment);
+        const recovery = completeDeployment(context.api, profileId);
 
         // The replacement has been deployed; preservation is no longer needed.
         clearUpdateState();
+        await recovery;
 
         const discovery = selectors.discoveryByGame(
           context.api.getState(),
@@ -396,17 +404,19 @@ function main(context: types.IExtensionContext): boolean {
         if (!isDarktideProfile(context.api, profileId)) {
           return;
         }
+        rememberLoadOrderProfile(context.api, profileId);
         rememberDeploymentFiles(deployment);
       },
     );
 
     // Unpatch on purge. `will-purge` is global too, so scope it to Darktide.
-    context.api.events.on("will-purge", (profileId: string) => {
+    context.api.onAsync("will-purge", async (profileId: string) => {
       if (!isDarktideProfile(context.api, profileId)) {
         return;
       }
 
       clearUpdateState();
+      await beginPurge(context.api, profileId);
 
       const discovery = selectors.discoveryByGame(
         context.api.getState(),
@@ -422,6 +432,33 @@ function main(context: types.IExtensionContext): boolean {
       } catch {
         // ignore
       }
+    });
+
+    context.api.onAsync("did-purge", async (profileId: string) => {
+      if (isDarktideProfile(context.api, profileId)) {
+        await completePurge(context.api, profileId);
+      }
+    });
+
+    context.api.onStateChange?.(
+      ["session", "base", "activity", "mods"],
+      async (previous: string[] | undefined, current: string[] | undefined) => {
+        if (previous?.includes("purging") && !current?.includes("purging")) {
+          try {
+            await reconcilePurge(context.api);
+          } catch (err) {
+            context.api.showErrorNotification?.(
+              "Failed to recover load order",
+              err,
+            );
+          }
+        }
+      },
+    );
+
+    context.api.events.on("profile-did-change", () => {
+      // lastActiveProfileForGame is now authoritative until the next deployment.
+      loadOrderState.profileId = undefined;
     });
 
     context.api.events.on(

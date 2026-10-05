@@ -36,3 +36,30 @@ export function clearUpdateState(): void {
   modUpdateState.updateInProgress = false;
   modUpdateState.profileId = undefined;
 }
+
+/** The profile whose files are on disk, even before Vortex confirms a switch. */
+export const loadOrderState = {
+  gamePath: undefined as string | undefined,
+  profileId: undefined as string | undefined,
+  purged: false,
+  /** will-purge ran, but the host has not reported successful completion. */
+  purgePreparing: false,
+  /** A failed purge removed files; preserve them while saving surviving mods. */
+  purgeFailed: false,
+  deploymentComplete: false,
+  snapshotLoad: undefined as Promise<void> | undefined,
+  // A purge can remove mod_load_order.txt itself. Keep its settings until the
+  // same profile is deployed again, including comments for other profiles.
+  preservedFile: undefined as { scope: string; contents: string } | undefined,
+};
+
+export function resetLoadOrderState(): void {
+  loadOrderState.gamePath = undefined;
+  loadOrderState.profileId = undefined;
+  loadOrderState.purged = false;
+  loadOrderState.purgePreparing = false;
+  loadOrderState.purgeFailed = false;
+  loadOrderState.deploymentComplete = false;
+  loadOrderState.snapshotLoad = undefined;
+  loadOrderState.preservedFile = undefined;
+}

@@ -11,7 +11,11 @@ import {
   validate,
   warnAboutOrder,
 } from "../loadorder";
-import { clearUpdateState, modUpdateState } from "../state";
+import {
+  clearUpdateState,
+  modUpdateState,
+  resetLoadOrderState,
+} from "../state";
 import {
   addModFolder,
   fs,
@@ -46,6 +50,7 @@ function readOrder(): string[] {
 beforeEach(() => {
   resetAll();
   clearUpdateState();
+  resetLoadOrderState();
   modUpdateState.deployedModIds.clear();
   modUpdateState.manifestPath = undefined;
   modUpdateState.manifestLoad = undefined;

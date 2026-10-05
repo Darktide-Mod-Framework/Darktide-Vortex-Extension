@@ -87,6 +87,9 @@ it("forwards drag refs and preserves toggle and position actions, including lock
   expect(setRef).toHaveBeenCalledWith({ node: "row" });
   expect(forwardedRef).toHaveBeenCalledWith({ node: "row" });
   expect(view.root.findByType("li").props.className).toContain("dragging");
+  expect(view.root.findByType("li").props.className).toContain(
+    "fblo-uniform-row",
+  );
   view.root.findByType("input").props.onChange({ target: { checked: false } });
   expect(dispatch).toHaveBeenLastCalledWith({
     type: "SET_FB_LOAD_ORDER_ENTRY",

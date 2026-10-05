@@ -5,7 +5,7 @@ import { orderMods, type LoadOrder, type OrderRules } from "./ordering";
 import { fs, selectors, types, util } from "@nexusmods/vortex-api";
 
 import { GAME_ID } from "./constants";
-import { modUpdateState } from "./state";
+import { loadOrderState, modUpdateState, resetLoadOrderState } from "./state";
 
 /**
  * First line written by `serializeLoadOrder`. It is a marker for humans, not a
@@ -13,13 +13,254 @@ import { modUpdateState } from "./state";
  */
 export const MANAGED_HEADER = "File managed by Vortex mod manager";
 const OVERRIDE_HEADER = "-- Vortex ordering overrides: ";
+const PURGE_SNAPSHOT = ".vortex_load_order_purge.json";
 
-function scopeFor(api: types.IExtensionApi): string {
-  const state = api.getState();
+// Deployment listeners run concurrently. Serialize writes to the recovery file
+// so completion cannot recreate a snapshot that a successful FBLO read consumed.
+const snapshotWrites = new Map<string, Promise<void>>();
+function updateSnapshot(
+  gamePath: string,
+  operation: (filePath: string) => Promise<void>,
+): Promise<void> {
+  const filePath = path.join(gamePath, "mods", PURGE_SNAPSHOT);
+  const pending = (snapshotWrites.get(filePath) ?? Promise.resolve())
+    .catch(() => undefined)
+    .then(() => operation(filePath));
+  snapshotWrites.set(filePath, pending);
+  return pending.finally(() => {
+    if (snapshotWrites.get(filePath) === pending)
+      snapshotWrites.delete(filePath);
+  });
+}
+
+function persistSnapshot(
+  gamePath: string,
+  preservedFile: { scope: string; contents: string },
+  purged: boolean,
+): Promise<void> {
+  const contents = JSON.stringify({
+    ...preservedFile,
+    purged,
+    purgePreparing: purged && loadOrderState.purgePreparing,
+    purgeFailed: purged && loadOrderState.purgeFailed,
+  });
+  return updateSnapshot(gamePath, (filePath) =>
+    fs.writeFileAsync(filePath, contents, { encoding: "utf8" }),
+  );
+}
+
+async function loadSnapshot(gamePath: string): Promise<void> {
+  if (loadOrderState.gamePath !== gamePath) {
+    resetLoadOrderState();
+    loadOrderState.gamePath = gamePath;
+  }
+  if (loadOrderState.snapshotLoad === undefined) {
+    const pending = (async () => {
+      const filePath = path.join(gamePath, "mods", PURGE_SNAPSHOT);
+      await snapshotWrites.get(filePath);
+      const contents = await fs
+        .readFileAsync(filePath, { encoding: "utf8" })
+        .catch((err: NodeJS.ErrnoException) => {
+          if (err.code !== "ENOENT") throw err;
+          return "";
+        });
+      if (contents === "") return;
+      let saved: unknown;
+      try {
+        saved = JSON.parse(contents);
+      } catch {
+        return;
+      }
+      if (saved === null || typeof saved !== "object") return;
+      const record = saved as Record<string, unknown>;
+      if (
+        typeof record.scope !== "string" ||
+        typeof record.contents !== "string" ||
+        typeof record.purged !== "boolean"
+      )
+        return;
+      let scope: unknown;
+      try {
+        scope = JSON.parse(record.scope);
+      } catch {
+        return;
+      }
+      if (!Array.isArray(scope) || scope.length !== 2 || scope[0] !== gamePath)
+        return;
+      if (
+        loadOrderState.gamePath === gamePath &&
+        loadOrderState.preservedFile === undefined
+      ) {
+        loadOrderState.preservedFile = {
+          scope: record.scope,
+          contents: record.contents,
+        };
+        loadOrderState.purged =
+          record.purged && !loadOrderState.deploymentComplete;
+        // Older snapshots have no completion marker. Check their files before
+        // assuming that a purge completed rather than failed before removal.
+        loadOrderState.purgePreparing =
+          loadOrderState.purged && record.purgePreparing !== false;
+        loadOrderState.purgeFailed =
+          loadOrderState.purged && record.purgeFailed === true;
+      }
+    })();
+    loadOrderState.snapshotLoad = pending;
+  }
+  await loadOrderState.snapshotLoad;
+}
+
+async function consumeSnapshot(
+  gamePath: string,
+  scope: string,
+  preservedFile: typeof loadOrderState.preservedFile,
+): Promise<void> {
+  if (
+    loadOrderState.preservedFile === preservedFile &&
+    preservedFile?.scope === scope
+  ) {
+    loadOrderState.preservedFile = undefined;
+    await updateSnapshot(gamePath, (filePath) => fs.removeAsync(filePath));
+  }
+}
+
+function scopeFor(state: types.IState): string {
+  const gamePath = selectors.discoveryByGame(state, GAME_ID)?.path;
   return JSON.stringify([
-    selectors.discoveryByGame(state, GAME_ID)?.path,
-    selectors.lastActiveProfileForGame(state, GAME_ID),
+    gamePath,
+    (loadOrderState.gamePath === gamePath
+      ? loadOrderState.profileId
+      : undefined) ?? selectors.lastActiveProfileForGame(state, GAME_ID),
   ]);
+}
+
+/** will-deploy is awaited before the incoming profile's files reach disk. */
+export function rememberLoadOrderProfile(
+  api: types.IExtensionApi,
+  profileId: string,
+): void {
+  const gamePath = selectors.discoveryByGame(api.getState(), GAME_ID)?.path;
+  if (loadOrderState.gamePath !== gamePath) resetLoadOrderState();
+  loadOrderState.gamePath = gamePath;
+  loadOrderState.profileId = profileId;
+}
+
+export async function beginPurge(
+  api: types.IExtensionApi,
+  profileId: string,
+): Promise<void> {
+  rememberLoadOrderProfile(api, profileId);
+  const state = api.getState();
+  const gamePath = loadOrderState.gamePath;
+  if (gamePath === undefined) return;
+  loadOrderState.purged = true;
+  loadOrderState.purgePreparing = true;
+  loadOrderState.purgeFailed = false;
+  loadOrderState.deploymentComplete = false;
+  await loadSnapshot(gamePath);
+  loadOrderState.purged = true;
+  loadOrderState.purgePreparing = true;
+  loadOrderState.purgeFailed = false;
+  const scope = scopeFor(state);
+  const contents = await fs
+    .readFileAsync(path.join(gamePath, "mods", "mod_load_order.txt"), {
+      encoding: "utf8",
+    })
+    .catch((err: NodeJS.ErrnoException) => {
+      if (err.code !== "ENOENT") throw err;
+      return "";
+    });
+  // Repeated purges must not replace the original with an absent/default file.
+  if (loadOrderState.preservedFile?.scope !== scope) {
+    loadOrderState.preservedFile = { scope, contents };
+  }
+  await persistSnapshot(gamePath, loadOrderState.preservedFile, true);
+}
+
+/**
+ * Vortex clears its purging activity even when it skips did-purge after an
+ * error. A restart can also leave only the preparation snapshot behind.
+ * Release saving when nothing was removed; otherwise retain missing choices
+ * while allowing edits to reach the files that survived the failed purge.
+ */
+export async function reconcilePurge(
+  api: types.IExtensionApi,
+  completed = false,
+): Promise<void> {
+  if (!loadOrderState.purgePreparing) return;
+  if (
+    !completed &&
+    api.getState().session?.base?.activity?.mods?.includes("purging")
+  )
+    return;
+  const gamePath = loadOrderState.gamePath;
+  const preservedFile = loadOrderState.preservedFile;
+  if (gamePath === undefined || preservedFile === undefined) return;
+  const ids = preservedFile.contents
+    .split("\n")
+    .filter((line) => !line.startsWith(OVERRIDE_HEADER))
+    .map(parseEntryId)
+    .filter((id): id is string => id !== undefined && id !== MANAGED_HEADER);
+  const present = await Promise.all(
+    ids.map(async (id) => {
+      try {
+        await fs.statAsync(path.join(gamePath, "mods", id, `${id}.mod`));
+        return true;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        if (code !== "ENOENT" && code !== "ENOTDIR") throw err;
+        return false;
+      }
+    }),
+  );
+  if (
+    !loadOrderState.purgePreparing ||
+    loadOrderState.gamePath !== gamePath ||
+    loadOrderState.preservedFile !== preservedFile
+  )
+    return;
+  loadOrderState.purged = present.some((exists) => !exists);
+  loadOrderState.purgePreparing = false;
+  loadOrderState.purgeFailed = loadOrderState.purged && !completed;
+  await persistSnapshot(gamePath, preservedFile, loadOrderState.purged);
+}
+
+export async function completePurge(
+  api: types.IExtensionApi,
+  profileId: string,
+): Promise<void> {
+  rememberLoadOrderProfile(api, profileId);
+  // ProcessCanceled can still emit did-purge without removing any files.
+  // Inspect the result rather than leaving those mods indefinitely guarded.
+  await reconcilePurge(api, true);
+}
+
+function canSavePurgedOrder(api: types.IExtensionApi): boolean {
+  const activity = api.getState().session?.base?.activity?.mods;
+  return (
+    !loadOrderState.purgePreparing &&
+    !activity?.includes("purging") &&
+    !activity?.includes("deployment")
+  );
+}
+
+export async function completeDeployment(
+  api: types.IExtensionApi,
+  profileId: string,
+): Promise<void> {
+  rememberLoadOrderProfile(api, profileId);
+  loadOrderState.purged = false;
+  loadOrderState.purgePreparing = false;
+  loadOrderState.purgeFailed = false;
+  loadOrderState.deploymentComplete = true;
+  const gamePath = loadOrderState.gamePath;
+  if (gamePath === undefined) return;
+  await loadSnapshot(gamePath);
+  // The saved file is consumed by the subsequent FBLO read, which may already
+  // be awaiting the filesystem when this did-deploy listener runs.
+  const preservedFile = loadOrderState.preservedFile;
+  if (preservedFile !== undefined)
+    await persistSnapshot(gamePath, preservedFile, false);
 }
 
 type SavedOverrides = Record<string, Array<[string, string[]]>>;
@@ -107,7 +348,8 @@ async function getOrderRules(
   if (
     cached !== undefined &&
     (cached.mtimeMs === mtimeMs ||
-      (mtimeMs === undefined && modUpdateState.updateInProgress))
+      (mtimeMs === undefined &&
+        (modUpdateState.updateInProgress || loadOrderState.purged)))
   ) {
     return cached.rules;
   }
@@ -329,6 +571,9 @@ export async function deserializeLoadOrder(
   if (discovery?.path === undefined) {
     return [];
   }
+  // Capture the event's profile before any asynchronous work. A later incoming
+  // deployment must not relabel this read as another profile.
+  const scope = scopeFor(state);
 
   // A session may open the load-order page before any deployment event fires.
   // Read the persisted manifest once per game path; events keep it fresh after
@@ -353,20 +598,29 @@ export async function deserializeLoadOrder(
       }
     })();
   }
-  await modUpdateState.manifestLoad;
+  await Promise.all([
+    modUpdateState.manifestLoad,
+    loadSnapshot(discovery.path),
+  ]);
+  await reconcilePurge(api);
 
   const modFolderPath = path.join(discovery.path, "mods");
   const loadOrderPath = path.join(modFolderPath, "mod_load_order.txt");
 
-  const loadOrderFile = await fs
+  const diskFile = await fs
     .readFileAsync(loadOrderPath, { encoding: "utf8" })
     .catch((err: NodeJS.ErrnoException) => {
       if (err.code !== "ENOENT") throw err;
       return "";
     });
 
+  const preservedFile =
+    loadOrderState.gamePath === discovery.path
+      ? loadOrderState.preservedFile
+      : undefined;
+  const loadOrderFile =
+    preservedFile?.scope === scope ? preservedFile.contents : diskFile;
   const modFolders = await listModFolders(modFolderPath);
-  const scope = scopeFor(api);
   const readToken = randomUUID();
   const overrides = new Map(readOverrides(loadOrderFile)[scope] ?? []);
 
@@ -381,7 +635,11 @@ export async function deserializeLoadOrder(
 
     // Keep entries whose folder is only temporarily absent because it is being
     // replaced. Without an update in flight the mod is really uninstalled.
-    if (!modFolders.includes(id) && !modUpdateState.updateInProgress) {
+    if (
+      !modFolders.includes(id) &&
+      !modUpdateState.updateInProgress &&
+      !(loadOrderState.gamePath === discovery.path && loadOrderState.purged)
+    ) {
       continue;
     }
 
@@ -425,8 +683,24 @@ export async function deserializeLoadOrder(
   // FBLO may skip serialization when this matches its existing Redux order.
   // Persist discovery/metadata-driven sorting now so the game and UI agree even
   // on that path. No user intent is inferred during a disk read.
-  if (ordered.length > 0 || loadOrderFile !== "") {
-    await writeOrder(loadOrderPath, ordered, scope, loadOrderFile);
+  // Leave files alone during purge/deployment. Once purging stops, surviving
+  // mods can receive changes; keep missing choices until deployment finishes.
+  const purged =
+    loadOrderState.gamePath === discovery.path && loadOrderState.purged;
+  if (
+    (!purged ||
+      (canSavePurgedOrder(api) &&
+        (loadOrderState.purgeFailed || modFolders.length > 0))) &&
+    (ordered.length > 0 || loadOrderFile !== "")
+  ) {
+    await writeOrder(
+      loadOrderPath,
+      ordered,
+      scope,
+      diskFile,
+      preservedFile?.contents,
+    );
+    if (!purged) await consumeSnapshot(discovery.path, scope, preservedFile);
   }
   return ordered;
 }
@@ -443,6 +717,9 @@ export async function serializeLoadOrder(
   }
 
   const loadOrderPath = path.join(discovery.path, "mods", "mod_load_order.txt");
+  const scope = scopeFor(state);
+  await loadSnapshot(discovery.path);
+  await reconcilePurge(api);
 
   // The action check normalizes before Redux stores the order, so UI and disk
   // agree. Normalize defensively for direct callers as well.
@@ -454,7 +731,45 @@ export async function serializeLoadOrder(
         if (err.code !== "ENOENT") throw err;
         return "";
       });
-    await writeOrder(loadOrderPath, ordered, scopeFor(api), previousFile);
+    const preservedFile =
+      loadOrderState.gamePath === discovery.path
+        ? loadOrderState.preservedFile
+        : undefined;
+    if (loadOrderState.gamePath === discovery.path && loadOrderState.purged) {
+      // Preserve UI changes until redeployment, deferring the game-file write
+      // while the deployment engine is removing or replacing files.
+      loadOrderState.preservedFile = {
+        scope,
+        contents: orderContents(
+          ordered,
+          scope,
+          previousFile,
+          preservedFile?.contents,
+        ),
+      };
+      await persistSnapshot(discovery.path, loadOrderState.preservedFile, true);
+      if (canSavePurgedOrder(api)) {
+        // Purging has stopped. Surviving mods must see the user's changes now,
+        // including manual mods and removals the activator silently skipped.
+        // The recovery file still owns choices for the removed mods.
+        await writeOrder(
+          loadOrderPath,
+          ordered,
+          scope,
+          previousFile,
+          preservedFile?.contents,
+        );
+      }
+      return;
+    }
+    await writeOrder(
+      loadOrderPath,
+      ordered,
+      scope,
+      previousFile,
+      preservedFile?.contents,
+    );
+    await consumeSnapshot(discovery.path, scope, preservedFile);
   } catch (err) {
     const allowReport = !(err instanceof util.UserCanceled);
     api.showErrorNotification?.("Failed to save load order", err, {
@@ -464,18 +779,21 @@ export async function serializeLoadOrder(
   }
 }
 
-async function writeOrder(
-  loadOrderPath: string,
+function orderContents(
   ordered: LoadOrder,
   scope: string,
   previousFile: string,
-): Promise<void> {
+  preservedFile?: string,
+): string {
   const entries: Array<[string, string[]]> = ordered
     .filter((m) => m.data?.ignoredBefore?.length)
     .map((m) => [m.id, m.data!.ignoredBefore!]);
   // Keep exceptions for other profiles when the shared game file changes.
   // Storing metadata with the order avoids separate-file partial writes.
-  const saved = readOverrides(previousFile);
+  const saved = {
+    ...readOverrides(preservedFile ?? ""),
+    ...readOverrides(previousFile),
+  };
   if (entries.length) saved[scope] = entries;
   else delete saved[scope];
   const metadata = Object.keys(saved).length
@@ -484,7 +802,17 @@ async function writeOrder(
   const output = ordered
     .map((mod) => (mod.enabled ? mod.id : `-- ${mod.id}`))
     .join("\n");
-  const contents = `-- ${MANAGED_HEADER}\n${metadata}${output}`;
+  return `-- ${MANAGED_HEADER}\n${metadata}${output}`;
+}
+
+async function writeOrder(
+  loadOrderPath: string,
+  ordered: LoadOrder,
+  scope: string,
+  previousFile: string,
+  preservedFile?: string,
+): Promise<void> {
+  const contents = orderContents(ordered, scope, previousFile, preservedFile);
   if (contents !== previousFile) {
     await fs.writeFileAsync(loadOrderPath, contents, { encoding: "utf8" });
   }
@@ -557,9 +885,10 @@ export async function validate(
   const messages = new Map<string, string>();
   for (const warning of getOrderWarnings(current)) {
     const existing = messages.get(warning.id);
-    messages.set(warning.id, existing === undefined
-      ? warning.reason
-      : `${warning.reason} ${existing}`);
+    messages.set(
+      warning.id,
+      existing === undefined ? warning.reason : `${warning.reason} ${existing}`,
+    );
   }
   const invalid = [...messages].map(([id, reason]) => ({ id, reason }));
   return invalid.length > 0 ? { invalid } : undefined;

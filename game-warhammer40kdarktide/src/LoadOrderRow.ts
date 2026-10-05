@@ -5,27 +5,31 @@ import {
   LoadOrderIndexInput,
   types,
 } from "@nexusmods/vortex-api";
-import { getOrderWarnings } from "./loadorder";
-import { useLoadOrderWarnings } from "./UsageInstructions";
+import { isLocked, useLoadOrderWarnings } from "./loadOrderWarnings";
 
 type RowProps = React.ComponentProps<
   NonNullable<types.ILoadOrderGameInfo["customItemRenderer"]>
 >;
-const isLocked = (entry: types.ILoadOrderEntry) =>
-  entry.locked === true || entry.locked === "true" || entry.locked === "always";
 
 export function createLoadOrderRow(
   api: types.IExtensionApi,
 ): React.ComponentType<RowProps> {
-  return function LoadOrderRow({ item, className, forwardedRef }) {
-    const { loadOrder, profileId } = useLoadOrderWarnings(api);
-    const entry =
-      loadOrder.find((mod) => mod.id === item.loEntry.id) ?? item.loEntry;
-    const warnings = React.useMemo(
-      () => getOrderWarnings(loadOrder),
-      [loadOrder],
-    ).filter((warning) => warning.id === entry.id);
-    const position = loadOrder.findIndex((mod) => mod.id === entry.id) + 1;
+  return React.memo(function LoadOrderRow({
+    item,
+    className,
+    forwardedRef,
+  }: RowProps) {
+    const {
+      loadOrder,
+      profileId,
+      entries,
+      positions,
+      warningsById,
+      lockedEntriesCount,
+    } = useLoadOrderWarnings(api);
+    const entry = entries.get(item.loEntry.id) ?? item.loEntry;
+    const warnings = warningsById.get(entry.id) ?? [];
+    const position = positions.get(entry.id) ?? 0;
     const locked = isLocked(entry);
     const external = entry.modId === undefined;
     const name = entry.name || entry.id;
@@ -58,7 +62,7 @@ export function createLoadOrderRow(
       {
         ref: setRef,
         className: [
-          "list-group-item load-order-entry",
+          "list-group-item load-order-entry fblo-uniform-row",
           className,
           external ? "external" : "",
         ]
@@ -75,7 +79,7 @@ export function createLoadOrderRow(
         item: entry,
         loadOrder,
         currentPosition: position || item.position || 1,
-        lockedEntriesCount: loadOrder.filter(isLocked).length,
+        lockedEntriesCount,
         isLocked,
         onApplyIndex: applyIndex,
       }),
@@ -149,5 +153,5 @@ export function createLoadOrderRow(
           name: "locked",
         }),
     );
-  };
+  });
 }
