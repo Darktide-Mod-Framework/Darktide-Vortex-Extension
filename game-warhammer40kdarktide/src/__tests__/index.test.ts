@@ -548,50 +548,64 @@ describe("purge and profile switching", () => {
     },
   );
 
-  it("uses the deployed profile before last-active changes and preserves the outgoing override", async () => {
-    const { asyncHandlers, eventHandlers, registration } =
-      await setupProfiles();
-    for (const id of ["first", "second"]) addModFolder(id);
-    const metadataPath = path.join(GAME_PATH, "mods", "second", "info.json");
-    const metadata = JSON.stringify({
-      dependencies: { self_after: ["first"] },
-    });
-    writeFile(metadataPath, metadata);
-    setOrder([HEADER_LINE, "first", "second"]);
-    const initial = await registration.deserializeLoadOrder();
-    await registration.serializeLoadOrder([initial[1], initial[0]], initial);
-    vortexState.settings = { profiles: { nextProfileId: "b" } };
+  it.each([
+    ["native", GAME_PATH],
+    ["Windows", path.win32.join("C:\\Games", "Darktide", "__test_game__")],
+  ])(
+    "uses the deployed profile before last-active changes and preserves the outgoing override (%s path)",
+    async (_platform, gamePath) => {
+      setGamePath(gamePath);
+      const orderPath = path.join(gamePath, "mods", "mod_load_order.txt");
+      const { asyncHandlers, eventHandlers, registration } =
+        await setupProfiles();
+      for (const id of ["first", "second"]) addModFolder(id);
+      const metadataPath = path.join(gamePath, "mods", "second", "info.json");
+      const metadata = JSON.stringify({
+        dependencies: { self_after: ["first"] },
+      });
+      writeFile(metadataPath, metadata);
+      writeFile(orderPath, [HEADER_LINE, "first", "second"].join("\n"));
+      const initial = await registration.deserializeLoadOrder();
+      await registration.serializeLoadOrder([initial[1], initial[0]], initial);
+      vortexState.settings = { profiles: { nextProfileId: "b" } };
 
-    // Vortex deploys the outgoing profile while the next profile is already B.
-    await asyncHandlers.get("will-deploy")!("a", {});
-    expect(
-      (await registration.deserializeLoadOrder()).map((m: any) => m.id),
-    ).toEqual(["second", "first"]);
-    await asyncHandlers.get("will-deploy")!("b", {});
-    removeModFolder("second");
-    const [incoming] = await Promise.all([
-      registration.deserializeLoadOrder(),
-      asyncHandlers.get("did-deploy")!("b", {}),
-    ]);
-    expect(vortexState.lastActiveProfile[GAME_ID]).toBe("a");
-    expect(incoming[0].data.scope).toBe(JSON.stringify([GAME_PATH, "b"]));
-    expect(readFileText(ORDER_PATH)).toContain(
-      JSON.stringify([GAME_PATH, "a"]).replaceAll('"', '\\"'),
-    );
+      // Vortex deploys the outgoing profile while the next profile is already B.
+      await asyncHandlers.get("will-deploy")!("a", {});
+      expect(
+        (await registration.deserializeLoadOrder()).map((m: any) => m.id),
+      ).toEqual(["second", "first"]);
+      await asyncHandlers.get("will-deploy")!("b", {});
+      removeModFolder("second");
+      const [incoming] = await Promise.all([
+        registration.deserializeLoadOrder(),
+        asyncHandlers.get("did-deploy")!("b", {}),
+      ]);
+      expect(vortexState.lastActiveProfile[GAME_ID]).toBe("a");
+      expect(incoming[0].data.scope).toBe(JSON.stringify([gamePath, "b"]));
+      const overridePrefix = "-- Vortex ordering overrides: ";
+      const overrideLine = readFileText(orderPath)
+        ?.split("\n")
+        .find((line) => line.startsWith(overridePrefix));
+      expect(overrideLine).toBeDefined();
+      const overrides = JSON.parse(overrideLine!.slice(overridePrefix.length));
+      expect(overrides[JSON.stringify([gamePath, "a"])]).toEqual([
+        ["first", ["second"]],
+      ]);
 
-    // Confirmation happens after deployment callbacks complete.
-    vortexState.activeProfileId = "b";
-    vortexState.lastActiveProfile[GAME_ID] = "b";
-    eventHandlers.get("profile-did-change")?.("b");
-    await asyncHandlers.get("will-deploy")!("a", {});
-    addModFolder("second");
-    writeFile(metadataPath, metadata);
-    const [returned] = await Promise.all([
-      registration.deserializeLoadOrder(),
-      asyncHandlers.get("did-deploy")!("a", {}),
-    ]);
-    expect(returned.map((m: any) => m.id)).toEqual(["second", "first"]);
-  });
+      // Confirmation happens after deployment callbacks complete.
+      vortexState.activeProfileId = "b";
+      vortexState.lastActiveProfile[GAME_ID] = "b";
+      eventHandlers.get("profile-did-change")?.("b");
+      await asyncHandlers.get("will-deploy")!("a", {});
+      addModFolder("second");
+      writeFile(metadataPath, metadata);
+      const [returned] = await Promise.all([
+        registration.deserializeLoadOrder(),
+        asyncHandlers.get("did-deploy")!("a", {}),
+      ]);
+      expect(returned.map((m: any) => m.id)).toEqual(["second", "first"]);
+    },
+  );
 
   it("keeps a read's captured profile when another deployment starts during metadata lookup", async () => {
     const { asyncHandlers, registration } = await setupProfiles();
