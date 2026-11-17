@@ -89,6 +89,60 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+describe("Steam direct launch setup", () => {
+  const appIdPath = path.join(GAME_PATH, "binaries", "steam_appid.txt");
+
+  it("creates the app ID beside Darktide.exe and can run again", async () => {
+    const { context } = createContext();
+    main(context as any);
+    const game = context.registerGame.mock.calls[0][0];
+
+    await game.setup({ path: GAME_PATH, store: "steam" });
+    expect(readFileText(appIdPath)).toBe("1361210");
+    await game.setup({ path: GAME_PATH, store: "steam" });
+    expect(readFileText(appIdPath)).toBe("1361210");
+    expect(readFileText(ORDER_PATH)).toBe("");
+  });
+
+  it("preserves an existing app ID file", async () => {
+    writeFile(appIdPath, "1361210\r\n");
+    const { context } = createContext();
+    main(context as any);
+    await context.registerGame.mock.calls[0][0].setup({
+      path: GAME_PATH,
+      store: "steam",
+    });
+    expect(readFileText(appIdPath)).toBe("1361210\r\n");
+  });
+
+  it.each(["xbox", undefined])(
+    "does not create a Steam app ID for store %s",
+    async (store) => {
+      const { context } = createContext();
+      main(context as any);
+      await context.registerGame.mock.calls[0][0].setup({ path: GAME_PATH, store });
+      expect(readFileText(appIdPath)).toBeUndefined();
+    },
+  );
+
+  it("reports a write failure instead of silently leaving Steam setup incomplete", async () => {
+    const { context } = createContext();
+    main(context as any);
+    const failure = Object.assign(new Error("Access denied"), { code: "EACCES" });
+    const write = vi.spyOn(fs, "writeFileAsync").mockRejectedValueOnce(failure);
+    try {
+      await expect(
+        context.registerGame.mock.calls[0][0].setup({
+          path: GAME_PATH,
+          store: "steam",
+        }),
+      ).rejects.toBe(failure);
+    } finally {
+      write.mockRestore();
+    }
+  });
+});
+
 describe("deployment event scoping", () => {
   it("ignores did-deploy for another game", async () => {
     vortexState.profiles["p-skyrim"] = { id: "p-skyrim", gameId: "skyrim" };
