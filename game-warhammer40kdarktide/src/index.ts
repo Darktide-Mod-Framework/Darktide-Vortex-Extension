@@ -191,6 +191,20 @@ async function prepareForModding(
   }
   const gamePath = discovery.path;
 
+  // Direct Steam launches need the app ID beside the executable. Keep an
+  // existing file, and never create Steam configuration for the Xbox edition.
+  if (discovery.store === "steam") {
+    await fs
+      .writeFileAsync(
+        path.join(gamePath, "binaries", "steam_appid.txt"),
+        STEAMAPP_ID,
+        { encoding: "utf8", flag: "wx" },
+      )
+      .catch((err: NodeJS.ErrnoException) => {
+        if (err.code !== "EEXIST") throw err;
+      });
+  }
+
   // Ensure the mods directory exists.
   await fs.ensureDirWritableAsync(path.join(gamePath, "mods"));
 

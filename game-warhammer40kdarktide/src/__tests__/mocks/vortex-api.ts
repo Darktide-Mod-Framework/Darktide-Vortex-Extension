@@ -138,7 +138,14 @@ export const fs = {
     }
     return [...names];
   },
-  async writeFileAsync(filePath: string, data: string): Promise<void> {
+  async writeFileAsync(
+    filePath: string,
+    data: string,
+    options?: { encoding?: string; flag?: string },
+  ): Promise<void> {
+    if (options?.flag === "wx" && vfs.files.has(norm(filePath))) {
+      throw Object.assign(new Error(`EEXIST: ${filePath}`), { code: "EEXIST" });
+    }
     writeFile(filePath, data);
   },
   async ensureDirWritableAsync(dirPath: string): Promise<void> {
