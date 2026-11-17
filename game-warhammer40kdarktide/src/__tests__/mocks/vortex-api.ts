@@ -173,7 +173,7 @@ export const util = {
   UserCanceled,
   toBlue: (fn: unknown) => fn,
   opn: async () => undefined,
-  GameStoreHelper: { find: async () => [] },
+  GameStoreHelper: { findByAppId: async () => undefined },
   getManifest: async (
     ..._args: unknown[]
   ): Promise<{ files: Array<{ relPath: string; source: string }> }> => {

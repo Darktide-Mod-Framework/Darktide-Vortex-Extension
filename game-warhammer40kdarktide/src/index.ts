@@ -166,14 +166,6 @@ function installModLoadOrderFileMaker(files: string[]): types.IInstallResult {
 
 // --- game setup ------------------------------------------------------------
 
-async function findGame(): Promise<types.IGameStoreEntry | undefined> {
-  const results = await util.GameStoreHelper.find({
-    steam: STEAMAPP_ID,
-    xbox: MS_APPID,
-  });
-  return results[0];
-}
-
 function requiresLauncher(
   _gamePath: string,
   store?: string,
@@ -268,7 +260,12 @@ function main(context: types.IExtensionContext): boolean {
     id: GAME_ID,
     name: "Warhammer 40,000: Darktide",
     logo: "gameart.png",
-    queryPath: util.toBlue(findGame) as types.IGame["queryPath"],
+    // Let Vortex query each store and retain its path/store metadata, including
+    // the user's store choice when both editions are installed.
+    queryArgs: {
+      steam: STEAMAPP_ID,
+      xbox: MS_APPID,
+    },
     queryModPath: () => "",
     supportedTools: TOOLS,
     mergeMods: true,
@@ -282,11 +279,7 @@ function main(context: types.IExtensionContext): boolean {
       "--bundle-dir",
       "../bundle",
       "--ini",
-      "settings",
-      "--backend-auth-service-url",
-      "https://bsp-auth-prod.atoma.cloud",
-      "--backend-title-service-url",
-      "https://bsp-td-prod.atoma.cloud",
+      "settings"
     ],
     requiredFiles: ["launcher/Launcher.exe", "binaries/Darktide.exe"],
     setup: util.toBlue((discovery: types.IDiscoveryResult) =>

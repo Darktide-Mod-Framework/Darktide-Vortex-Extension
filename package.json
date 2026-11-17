@@ -11,14 +11,14 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
-    "@nexusmods/vortex-api": "^2.6.3",
+    "@nexusmods/vortex-api": "^2.10.1",
     "@types/node": "^20.11.0",
     "@types/react": "^16.14.70",
     "@types/react-test-renderer": "^16.9.12",
-    "prettier": "^3.3.3",
+    "prettier": "^3.10.1",
     "react": "^16.14.0",
     "react-test-renderer": "^16.14.0",
-    "typescript": "^5.5.0",
+    "typescript": "^7.0.2",
     "vitest": "^4.1.9"
   }
 }
