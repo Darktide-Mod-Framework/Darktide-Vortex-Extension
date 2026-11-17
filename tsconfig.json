@@ -2,7 +2,7 @@
   "compilerOptions": {
     "target": "ES2022",
     "module": "commonjs",
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "lib": ["ES2022", "DOM"],
     "esModuleInterop": true,
     "strict": true,
@@ -10,10 +10,6 @@
     "forceConsistentCasingInFileNames": true,
     "declaration": false,
     "sourceMap": false,
-    "baseUrl": ".",
-    "paths": {
-      "@nexusmods/vortex-api": ["node_modules/@nexusmods/vortex-api/lib/api.d.ts"]
-    },
     "rootDir": "game-warhammer40kdarktide/src",
     "outDir": "game-warhammer40kdarktide/dist",
     "types": ["node"]
